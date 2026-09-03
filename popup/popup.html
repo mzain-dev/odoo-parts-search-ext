@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Parts &amp; Customer Lookup</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div id="app">
+
+    <div class="toggle-bar search-type-toggle">
+      <button data-type="part" class="type-btn active">Part</button>
+      <button data-type="customer" class="type-btn">Customer</button>
+    </div>
+
+    <div id="not-odoo-screen" style="display:none">
+      <p class="empty-message">Open this from your Odoo tab.</p>
+    </div>
+
+    <div id="error-screen" style="display:none">
+      <p class="empty-message error-text" id="error-text"></p>
+      <button class="back-btn" id="error-back-btn">&larr; Back</button>
+    </div>
+
+    <!-- ================= PART MODE ================= -->
+    <div id="part-mode" style="display:none">
+
+      <div id="part-search-area">
+        <input id="part-search-box" type="text" placeholder="Part number or name..." />
+        <p class="empty-message" id="part-loading" style="display:none">Searching...</p>
+        <div id="part-search-results"></div>
+        <p class="empty-message" id="part-no-results" style="display:none">No matching parts.</p>
+      </div>
+
+      <div id="part-detail" style="display:none">
+        <button class="back-btn" id="part-back-btn">&larr; Back to results</button>
+
+        <div id="part-header">
+          <img id="part-image" alt="" />
+          <div id="part-header-text">
+            <h3 id="part-name"></h3>
+            <div id="part-code"></div>
+          </div>
+        </div>
+
+        <p class="empty-message" id="part-detail-loading" style="display:none">Loading part details...</p>
+
+        <div id="part-tabs-wrap" style="display:none">
+          <div class="toggle-bar tabs">
+            <button data-tab="stock" class="tab-btn active">Stock &amp; Location</button>
+            <button data-tab="cost" class="tab-btn">Cost</button>
+            <button data-tab="sales" class="tab-btn">Sales History</button>
+          </div>
+
+          <!-- Stock & Location -->
+          <div class="tab-panel active" id="tab-stock">
+            <div id="stock-totals" class="stat-grid"></div>
+            <h4>By Location</h4>
+            <div id="stock-locations"></div>
+            <h4>Incoming</h4>
+            <div id="stock-incoming"></div>
+          </div>
+
+          <!-- Cost -->
+          <div class="tab-panel" id="tab-cost">
+            <div id="cost-totals" class="stat-grid"></div>
+            <div class="section-header-row">
+              <h4>Vendor Comparison</h4>
+              <div class="toggle-bar sort-bar" id="vendor-sort-bar">
+                <button data-sort="price" class="sort-btn active">Price</button>
+                <button data-sort="vendor" class="sort-btn">Vendor</button>
+              </div>
+            </div>
+            <div id="cost-vendors"></div>
+            <div class="section-header-row">
+              <h4>Purchase History</h4>
+              <div class="toggle-bar sort-bar" id="cost-history-sort-bar">
+                <button data-sort="date" class="sort-btn active">Date</button>
+                <button data-sort="price" class="sort-btn">Price</button>
+                <button data-sort="vendor" class="sort-btn">Vendor</button>
+              </div>
+            </div>
+            <div id="cost-history"></div>
+          </div>
+
+          <!-- Sales History -->
+          <div class="tab-panel" id="tab-sales">
+            <div id="sales-totals" class="stat-grid"></div>
+            <div id="price-drift-box" style="display:none"></div>
+            <input id="sales-customer-search-box" type="text" placeholder="Search by customer name..." />
+            <h4>Top Customers</h4>
+            <div id="sales-top-customers"></div>
+            <div class="section-header-row">
+              <h4>Transactions</h4>
+              <div class="toggle-bar sort-bar" id="sales-sort-bar">
+                <button data-sort="date" class="sort-btn active">Date</button>
+                <button data-sort="price" class="sort-btn">Price</button>
+                <button data-sort="customer" class="sort-btn">Customer</button>
+              </div>
+            </div>
+            <div id="sales-transactions"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= CUSTOMER MODE ================= -->
+    <div id="customer-mode" style="display:none">
+
+      <div id="customer-search-area">
+        <input id="customer-search-box" type="text" placeholder='Name, or "Muscat over OMR 5000"...' />
+
+        <div class="toggle-bar quick-filter-bar">
+          <button data-quick="dormant90" class="quick-btn">Dormant 90+d</button>
+          <button data-quick="openQuotes" class="quick-btn">Open quotes</button>
+          <button data-quick="muscat" class="quick-btn">Muscat</button>
+          <button data-quick="salalah" class="quick-btn">Salalah</button>
+        </div>
+
+        <p class="empty-message" id="customer-loading" style="display:none">Searching...</p>
+        <div id="customer-list"></div>
+        <p class="empty-message" id="customer-no-results" style="display:none">No matching customers.</p>
+      </div>
+
+      <div id="customer-detail" style="display:none">
+        <button class="back-btn" id="customer-back-btn">&larr; Back to results</button>
+
+        <h3 id="customer-name"></h3>
+        <div id="customer-contact"></div>
+        <div id="customer-meta-tags"></div>
+
+        <div class="toggle-bar copy-bar">
+          <button id="copy-summary-btn">Copy summary</button>
+          <button id="copy-orders-btn">Copy orders</button>
+        </div>
+
+        <div id="customer-totals" class="stat-grid"></div>
+
+        <div id="buying-pattern-box" style="display:none"></div>
+
+        <div id="open-quotes-box" style="display:none">
+          <h4>Open Quotations</h4>
+          <div id="open-quotes-list"></div>
+        </div>
+
+        <div class="section-header-row">
+          <h4>Recent Orders</h4>
+          <div class="toggle-bar sort-bar" id="orders-sort-bar">
+            <button data-sort="date" class="sort-btn active">Date</button>
+            <button data-sort="amount" class="sort-btn">Amount</button>
+          </div>
+        </div>
+        <div id="customer-orders"></div>
+
+        <h4>Top Purchased Parts</h4>
+        <p class="empty-message" id="top-products-loading" style="display:none">Loading...</p>
+        <div id="customer-top-products"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="../lib/part-data.js"></script>
+  <script src="../lib/customer-data.js"></script>
+  <script src="../lib/filters.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

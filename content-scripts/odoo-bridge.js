@@ -157,6 +157,57 @@ async function getIncomingStock(productId) {
   );
 }
 
+// Best-effort. Answers "which delivery/transfer is holding my reserved
+// stock" - not just which location, which stock.quant.reserved_quantity
+// alone can't say. stock.move.line is the actual reservation record (one
+// per location a move has claimed stock from); querying it directly for
+// not-yet-done lines tied to a real transfer is more robust than inferring
+// from stock.move state, which varies in meaning across partial/backorder
+// scenarios. Any schema mismatch (field renamed in this Odoo instance)
+// degrades to an empty list - the reliable reserved_quantity total from
+// getStockByLocation still shows even if this detail can't be resolved.
+async function getReservedTransfers(productId) {
+  try {
+    // Excludes incoming receipts - reserved_quantity means on-hand stock
+    // earmarked for something going OUT (a delivery or an internal transfer),
+    // never stock still arriving from a purchase. Without this filter, a
+    // confirmed-but-not-yet-received PO line matches the same "not done"
+    // state and would wrongly show up here as if it were a reservation.
+    const moveLines = await searchRead(
+      'stock.move.line',
+      [
+        ['product_id', '=', productId],
+        ['state', 'not in', ['done', 'cancel']],
+        ['picking_id', '!=', false],
+        ['picking_id.picking_type_id.code', '!=', 'incoming']
+      ],
+      ['quantity', 'location_id', 'picking_id']
+    );
+    if (!moveLines.length) return [];
+
+    const pickingIds = uniqueRelationIds(moveLines, 'picking_id');
+    const pickings = pickingIds.length
+      ? await searchRead('stock.picking', [['id', 'in', pickingIds]], ['id', 'name', 'origin', 'picking_type_id'])
+      : [];
+    const pickingById = {};
+    for (const p of pickings) pickingById[p.id] = p;
+
+    return moveLines.map((l) => {
+      const pickingId = Array.isArray(l.picking_id) ? l.picking_id[0] : null;
+      const picking = pickingId !== null ? pickingById[pickingId] : null;
+      return {
+        qty: l.quantity,
+        location: Array.isArray(l.location_id) ? l.location_id[1] : null,
+        pickingName: picking ? picking.name : (Array.isArray(l.picking_id) ? l.picking_id[1] : null),
+        pickingType: picking && Array.isArray(picking.picking_type_id) ? picking.picking_type_id[1] : null,
+        origin: picking ? picking.origin : null
+      };
+    });
+  } catch (err) {
+    return [];
+  }
+}
+
 // Confirmed/done purchase lines, joined to their order's vendor and currency -
 // powers the cost history list and the vendor comparison, without a second
 // RPC per line. Vendors are frequently billed in different currencies (OMR,
@@ -434,6 +485,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     SEARCH_PART: () => searchPart(msg.query),
     GET_STOCK: () => getStockByLocation(msg.productId),
     GET_INCOMING_STOCK: () => getIncomingStock(msg.productId),
+    GET_RESERVED_TRANSFERS: () => getReservedTransfers(msg.productId),
     GET_PURCHASE_HISTORY: () => getPurchaseHistory(msg.productId),
     GET_LANDED_COSTS_FOR_ORDERS: () => getLandedCostsForOrders(msg.productId, msg.orderIds),
     GET_SALES_HISTORY: () => getSalesHistory(msg.productId),

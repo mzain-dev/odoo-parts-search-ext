@@ -1,5 +1,5 @@
 (function () {
-  const { shapeStockByLocation, computeStockValue, shapeIncomingStock,
+  const { shapeStockByLocation, computeStockValue, shapeIncomingStock, shapeReservedTransfers,
     shapeCostHistory, sortCostHistory, groupCostHistoryByType, costTrend, vendorComparison, attachLandedCost,
     shapeSalesHistory, sortSalesTransactions, groupSalesByMonth, attachFulfillment,
     marginPerSale, topCustomersForPart, priceDrift } = window.PartData;
@@ -42,6 +42,8 @@
   };
   const stockTotalsEl = $('stock-totals');
   const stockLocationsEl = $('stock-locations');
+  const stockReservedSectionEl = $('stock-reserved-section');
+  const stockReservedEl = $('stock-reserved');
   const stockIncomingEl = $('stock-incoming');
   const costTotalsEl = $('cost-totals');
   const costVendorsEl = $('cost-vendors');
@@ -178,7 +180,7 @@
     clear(container);
     for (const t of tiles) {
       const tile = document.createElement('div');
-      tile.className = 'stat-tile';
+      tile.className = 'stat-tile' + (t.highlight ? ' highlight' : '');
       const label = document.createElement('span');
       label.className = 'stat-label';
       label.textContent = t.label;
@@ -222,6 +224,19 @@
   // to control placement (grouped sections, paginated lists) can do so;
   // lineRow() below is the append-directly convenience wrapper most call
   // sites still want.
+  // A sub-line can be a plain string (neutral gray metadata) or
+  // { text, tone } to carry semantic color - tone is one of
+  // success/warning/info/danger/primary. Keeps status/insight text visually
+  // prominent instead of every line reading as the same flat gray.
+  function appendSubLine(parent, value) {
+    if (!value) return;
+    const isToned = typeof value === 'object';
+    const el = document.createElement('div');
+    el.className = 'line-row-sub' + (isToned && value.tone ? ` tone-${value.tone}` : '');
+    el.textContent = isToned ? value.text : value;
+    parent.appendChild(el);
+  }
+
   function buildLineRow({ title, sub, sub2, sub3, value, subValue, titleBadge }) {
     const row = document.createElement('div');
     row.className = 'line-row';
@@ -235,33 +250,13 @@
       t.appendChild(titleBadge);
     }
     main.appendChild(t);
-    if (sub) {
-      const s = document.createElement('div');
-      s.className = 'line-row-sub';
-      s.textContent = sub;
-      main.appendChild(s);
-    }
-    if (sub2) {
-      const s2 = document.createElement('div');
-      s2.className = 'line-row-sub';
-      s2.textContent = sub2;
-      main.appendChild(s2);
-    }
-    if (sub3) {
-      const s3 = document.createElement('div');
-      s3.className = 'line-row-sub';
-      s3.textContent = sub3;
-      main.appendChild(s3);
-    }
+    appendSubLine(main, sub);
+    appendSubLine(main, sub2);
+    appendSubLine(main, sub3);
     const valWrap = document.createElement('div');
     valWrap.className = 'line-row-value';
     valWrap.textContent = value;
-    if (subValue) {
-      const sv = document.createElement('div');
-      sv.className = 'line-row-sub';
-      sv.textContent = subValue;
-      valWrap.appendChild(sv);
-    }
+    appendSubLine(valWrap, subValue);
     row.appendChild(main);
     row.appendChild(valWrap);
     return row;
@@ -412,9 +407,10 @@
       partImageEl.style.visibility = 'hidden';
     }
 
-    const [stockRes, incomingRes, purchaseRes, salesRes] = await Promise.all([
+    const [stockRes, incomingRes, reservedRes, purchaseRes, salesRes] = await Promise.all([
       sendToOdoo('GET_STOCK', { productId: part.id }),
       sendToOdoo('GET_INCOMING_STOCK', { productId: part.id }),
+      sendToOdoo('GET_RESERVED_TRANSFERS', { productId: part.id }),
       sendToOdoo('GET_PURCHASE_HISTORY', { productId: part.id }),
       sendToOdoo('GET_SALES_HISTORY', { productId: part.id })
     ]);
@@ -448,7 +444,7 @@
     partDetailLoadingEl.style.display = 'none';
     partTabsWrapEl.style.display = 'block';
 
-    renderStockTab(stockRes.data, incomingRes.data, part.standard_price);
+    renderStockTab(stockRes.data, incomingRes.data, reservedRes.ok ? reservedRes.data : [], part.standard_price);
     renderCostTab(costHistoryWithLanded, part.standard_price);
 
     // Margin vs a landed reference uses the most recent purchase that
@@ -479,17 +475,18 @@
     });
   });
 
-  function renderStockTab(quants, incomingLines, avgCost) {
+  function renderStockTab(quants, incomingLines, reservedLines, avgCost) {
     const shaped = shapeStockByLocation(quants);
     const incoming = shapeIncomingStock(incomingLines);
+    const reserved = shapeReservedTransfers(reservedLines);
     const stockValue = computeStockValue(shaped.totalOnHand, avgCost);
 
     const tiles = [
-      { label: 'Free to sell', value: num(shaped.totalFreeToSell) },
+      { label: 'On Hand', value: num(shaped.totalOnHand) },
       { label: 'Reserved', value: num(shaped.totalReserved) }
     ];
     if (typeof stockValue === 'number') {
-      tiles.push({ label: 'Stock value (OMR)', value: num(stockValue) });
+      tiles.push({ label: 'Stock value (OMR)', value: num(stockValue), highlight: true });
     }
     buildStatGrid(stockTotalsEl, tiles);
 
@@ -502,6 +499,24 @@
           title: loc.location,
           sub: `Reserved: ${num(loc.reserved)}`,
           value: num(loc.qty)
+        });
+      }
+    }
+
+    // Only shown when there's a specific transfer to point to - if reserved
+    // qty is nonzero (already shown above) but no transfer detail could be
+    // resolved, the section stays hidden rather than claiming "none found".
+    if (!reserved.items.length) {
+      stockReservedSectionEl.style.display = 'none';
+      clear(stockReservedEl);
+    } else {
+      stockReservedSectionEl.style.display = 'block';
+      clear(stockReservedEl);
+      for (const item of reserved.items) {
+        lineRow(stockReservedEl, {
+          title: item.pickingName || 'Transfer',
+          sub: `${item.pickingType || 'Transfer'}${item.origin ? ' · For ' + item.origin : ''} · ${item.location || 'Unknown location'}`,
+          value: num(item.qty)
         });
       }
     }
@@ -525,7 +540,7 @@
 
   function costHistoryRowNode(c) {
     const landedNote = (typeof c.priceOmr === 'number' && typeof c.landedPerUnit === 'number')
-      ? `Landed unit cost: ${num(c.priceOmr)} + ${num(c.landedPerUnit)} = ${num(c.priceOmr + c.landedPerUnit)} OMR`
+      ? { text: `Landed unit cost: ${num(c.priceOmr)} + ${num(c.landedPerUnit)} = ${num(c.priceOmr + c.landedPerUnit)} OMR`, tone: 'primary' }
       : null;
     return buildLineRow({
       title: c.order || 'Purchase order',
@@ -598,7 +613,7 @@
     const lastPurchase = costHistoryWithLanded.length ? costHistoryWithLanded[0] : null;
 
     buildStatGrid(costTotalsEl, [
-      { label: 'Current avg cost', value: num(avgCost), badge: trendBadge(trend) },
+      { label: 'Current avg cost', value: num(avgCost), badge: trendBadge(trend), highlight: true },
       {
         label: 'Last purchase price',
         value: lastPurchase ? formatMoney(lastPurchase.price, lastPurchase.currency) : '—',
@@ -616,11 +631,15 @@
   // up front from qty_delivered/qty_invoiced; the DO/invoice numbers come
   // from deliveryInvoiceByLine, fetched once for the whole part in selectPart().
   function fulfillmentLine(status, kind, numbers) {
-    if (status === 'none') return kind === 'delivery' ? 'Not delivered' : 'Not invoiced';
+    if (status === 'none') {
+      return { text: kind === 'delivery' ? 'Not delivered' : 'Not invoiced', tone: 'warning' };
+    }
     const verb = kind === 'delivery' ? 'Delivered' : 'Invoiced';
-    const prefix = status === 'partial' ? `Partially ${verb.toLowerCase()}` : verb;
     const list = numbers && numbers.length ? numbers.join(', ') : '—';
-    return `${prefix}: ${list}`;
+    if (status === 'partial') {
+      return { text: `Partially ${verb.toLowerCase()}: ${list}`, tone: 'info' };
+    }
+    return { text: `${verb}: ${list}`, tone: 'success' };
   }
 
   function salesTransactionRowNode(t) {
@@ -767,7 +786,7 @@
 
     buildStatGrid(salesTotalsEl, [
       { label: 'Units sold (90d)', value: num(shaped.recentUnitsSold) },
-      { label: 'Total units sold', value: num(shaped.totalUnitsSold) },
+      { label: 'Total units sold', value: num(shaped.totalUnitsSold), highlight: true },
       { label: 'Last sold', value: formatDate(shaped.lastSoldDate), small: true }
     ]);
 
@@ -1007,7 +1026,7 @@
 
     buildStatGrid(customerTotalsEl, [
       { label: 'Total orders', value: String(c.totalOrders) },
-      { label: 'Total revenue', value: num(c.totalRevenue) },
+      { label: 'Total revenue', value: num(c.totalRevenue), highlight: true },
       { label: 'Last order', value: formatDate(c.lastOrderDate), small: true }
     ]);
 

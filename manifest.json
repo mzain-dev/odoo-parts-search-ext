@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "HMI Parts & Customer Lookup",
+  "name": "Parts & Customer Lookup",
   "version": "1.0.0",
   "description": "Read-only lookup for spare parts (stock, cost, sales history) and customers, active only while logged into Odoo.",
   "action": {
@@ -17,13 +17,11 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://digandlift-14-june-26-stag-36684010.dev.odoo.com/*"],
+      "matches": ["https://digandlift.odoo.com/*"],
       "js": ["content-scripts/odoo-bridge.js"],
       "run_at": "document_idle"
     }
   ],
   "permissions": ["activeTab", "scripting", "sidePanel", "clipboardWrite"],
-  "host_permissions": [
-    "https://digandlift-14-june-26-stag-36684010.dev.odoo.com/*"
-  ]
+  "host_permissions": ["https://digandlift.odoo.com/*"]
 }

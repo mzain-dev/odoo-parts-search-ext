@@ -2,7 +2,8 @@
   const { shapeStockByLocation, computeStockValue, shapeIncomingStock, shapeReservedTransfers,
     shapeCostHistory, sortCostHistory, groupCostHistoryByType, costTrend, vendorComparison, attachLandedCost,
     shapeSalesHistory, sortSalesTransactions, groupSalesByMonth, attachFulfillment,
-    marginPerSale, topCustomersForPart, priceDrift } = window.PartData;
+    marginPerSale, topCustomersForPart, priceDrift,
+    buildStockSummaryText, buildCostSummaryText, buildSalesSummaryText } = window.PartData;
   const { shapeCustomerCard, sortOrders, buyingPattern, shapeTopProducts,
     buildOrdersSpreadsheetText, buildCustomerSummaryText } = window.CustomerData;
   const { filterCustomers, parseCustomerSearchText } = window.Filters;
@@ -33,6 +34,7 @@
   const partNameEl = $('part-name');
   const partCodeEl = $('part-code');
   const partDetailLoadingEl = $('part-detail-loading');
+  const copyPartSummaryBtn = $('copy-part-summary-btn');
   const partTabsWrapEl = $('part-tabs-wrap');
   const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
   const tabPanels = {
@@ -380,6 +382,20 @@
 
   partSearchBoxEl.addEventListener('input', () => doPartSearch(partSearchBoxEl.value));
 
+  partSearchBoxEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const first = partSearchResultsEl.querySelector('.result-row');
+      if (first) first.click();
+    } else if (e.key === 'Escape') {
+      if (partSearchBoxEl.value) {
+        partSearchBoxEl.value = '';
+        doPartSearch('');
+      }
+      partSearchBoxEl.blur();
+    }
+  });
+
   // Sort state for the currently-open part's Cost/Sales lists - reset each
   // time a new part is selected, re-applied without re-fetching on click.
   let costHistoryState = [];
@@ -392,7 +408,18 @@
   let expandedTopCustomerId = null; // which Top Customers row is drilled into, if any
   let deliveryInvoiceByLine = {}; // line_id -> { doNumbers, invoiceNumbers }, fetched once per part (see selectPart)
 
+  // Held for "Copy part summary" - the raw part (name/code/avgCost/listPrice)
+  // plus the Stock tab's shaped results, which aren't otherwise kept around
+  // after renderStockTab runs (unlike Cost/Sales, which already keep
+  // costHistoryState/salesTransactionsState/topCustomersState for sorting).
+  let currentPart = null;
+  let stockShapedState = null;
+  let stockIncomingState = null;
+  let stockReservedState = null;
+  let stockValueState = null;
+
   async function selectPart(part) {
+    currentPart = part;
     partSearchAreaEl.style.display = 'none';
     partDetailEl.style.display = 'block';
     partTabsWrapEl.style.display = 'none';
@@ -480,6 +507,10 @@
     const incoming = shapeIncomingStock(incomingLines);
     const reserved = shapeReservedTransfers(reservedLines);
     const stockValue = computeStockValue(shaped.totalOnHand, avgCost);
+    stockShapedState = shaped;
+    stockIncomingState = incoming;
+    stockReservedState = reserved;
+    stockValueState = stockValue;
 
     const tiles = [
       { label: 'On Hand', value: num(shaped.totalOnHand) },
@@ -757,6 +788,13 @@
 
   salesCustomerSearchBoxEl.addEventListener('input', () => doSalesCustomerFilter(salesCustomerSearchBoxEl.value));
 
+  salesCustomerSearchBoxEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && salesCustomerSearchBoxEl.value) {
+      salesCustomerSearchBoxEl.value = '';
+      doSalesCustomerFilter('');
+    }
+  });
+
   const salesSortButtons = wireSortBar(salesSortBarEl, (sortBy) => {
     salesSortBy = sortBy;
     renderSalesTransactionsList();
@@ -808,6 +846,38 @@
     renderTopCustomersList();
     renderSalesTransactionsList();
   }
+
+  // Assembles a full plain-text report from whatever's already been rendered
+  // across all three tabs (all three render synchronously in selectPart, so
+  // by the time this button is clickable everything is populated regardless
+  // of which tab is currently visible). Cost/Sales recompute their derived
+  // views (vendors, trend, drift) from the already-stored line data instead
+  // of keeping yet more parallel state.
+  function buildFullPartSummaryText() {
+    if (!currentPart) return '';
+    const header = [`Part: ${currentPart.name}`, currentPart.default_code ? `Code: ${currentPart.default_code}` : null]
+      .filter(Boolean).join('\n');
+
+    const sections = [header];
+
+    if (stockShapedState) {
+      sections.push(buildStockSummaryText(stockShapedState, stockIncomingState, stockReservedState, stockValueState));
+    }
+
+    const vendors = vendorComparison(costHistoryState);
+    const trend = costTrend(costHistoryState);
+    sections.push(buildCostSummaryText(costHistoryState, vendors, currentPart.standard_price, trend));
+
+    const salesShaped = shapeSalesHistory(salesTransactionsState, { windowDays: 90 });
+    const drift = priceDrift(currentPart.list_price, salesTransactionsState, { windowDays: 90 });
+    sections.push(buildSalesSummaryText(salesShaped, drift, topCustomersState, salesTransactionsState));
+
+    return sections.join('\n\n');
+  }
+
+  copyPartSummaryBtn.addEventListener('click', () => {
+    copyToClipboard(buildFullPartSummaryText(), copyPartSummaryBtn);
+  });
 
   // ================= CUSTOMER MODE =================
 
@@ -899,6 +969,20 @@
   }, 300);
 
   customerSearchBoxEl.addEventListener('input', doCustomerSearch);
+
+  customerSearchBoxEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const first = customerListEl.querySelector('.customer-row');
+      if (first) first.click();
+    } else if (e.key === 'Escape') {
+      if (customerSearchBoxEl.value) {
+        customerSearchBoxEl.value = '';
+        doCustomerSearch();
+      }
+      customerSearchBoxEl.blur();
+    }
+  });
 
   quickButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -1120,6 +1204,19 @@
   chrome.tabs.onActivated.addListener(() => checkOdooTab());
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (tab.active && changeInfo.url) checkOdooTab();
+  });
+
+  // Escape backs out of whichever detail view is open, regardless of what's
+  // focused (clicking a row/button, not just typing in a search box, is the
+  // common way to have gotten there). Only one of the two detail panes can
+  // be visible at a time, so this can't fire both back buttons at once.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (partDetailEl.style.display !== 'none') {
+      partBackBtn.click();
+    } else if (customerDetailEl.style.display !== 'none') {
+      customerBackBtn.click();
+    }
   });
 
   checkOdooTab();

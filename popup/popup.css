@@ -219,7 +219,7 @@ input[type="text"]:focus {
   margin-bottom: 12px;
 }
 
-.tab-btn {
+.tab-btn, .landed-tab-btn {
   flex: 1;
   padding: 7px 4px;
   border: none;
@@ -232,11 +232,11 @@ input[type="text"]:focus {
   transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
 }
 
-.tab-btn:hover {
+.tab-btn:hover, .landed-tab-btn:hover {
   color: var(--ink);
 }
 
-.tab-btn.active {
+.tab-btn.active, .landed-tab-btn.active {
   background: var(--surface);
   color: var(--ink);
   box-shadow: var(--shadow-xs);
@@ -879,4 +879,23 @@ h4.landed-heading.tone-muted {
   font-size: 10.5px;
   color: var(--faint);
   margin: 0 0 6px;
+}
+
+.landed-detail-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.landed-detail-actions .show-more-btn {
+  width: auto;
+  flex: 1;
+  margin-top: 0;
+}
+
+.landed-detail-note {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin: 4px 2px;
 }

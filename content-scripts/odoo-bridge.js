@@ -559,6 +559,7 @@ async function getOrderClassification(orderIds) {
     map[o.id] = {
       name: o.name,
       vendor: relName(o.partner_id),
+      vendorId,
       purchaseType: classifyPurchaseType(vendorId !== null ? vendorCountryMap[vendorId] : null, relName(o.currency_id))
     };
   }
@@ -578,11 +579,24 @@ async function getOrderClassification(orderIds) {
 //   (stock.valuation.adjustment.lines) vs. the value that actually reached a
 //   valuation layer. The difference is what went straight to COGS.
 //
-// Limitation: a receipt counts as covered once ANY landed cost is posted on
-// it - this can't tell that a second expected charge (e.g. transport after
-// customs) is still missing.
+// historyReceipts - foreign receipts that DO have a posted landed cost, with
+//   the cost products on them. Fetched over at least the last 365 days (even
+//   for a 30-day view) so lib/landed-audit.js can learn which charges each
+//   vendor's shipments normally carry and flag receipts missing one.
+//
+// bills / negativeRows - see getUnappliedLandedCostBills and
+//   getNegativeStockRows. These two are independent checks: if either query
+//   fails on this Odoo instance, the rest of the audit still returns, with
+//   the failure reported in `errors`.
 async function getLandedCostAudit(sinceDate) {
   const since = sinceDate ? `${sinceDate} 00:00:00` : null;
+
+  // History window for "which charges does this vendor usually have".
+  const yearAgo = new Date();
+  yearAgo.setDate(yearAgo.getDate() - 365);
+  const yearAgoStr = yearAgo.toISOString().slice(0, 10);
+  const historySinceDate = sinceDate && sinceDate > yearAgoStr ? yearAgoStr : sinceDate;
+  const inPeriod = (picking) => !since || (picking.date_done || '') >= since;
 
   // ---- Part 1: receipts with no posted landed cost ----
   const pickingDomain = [
@@ -590,14 +604,28 @@ async function getLandedCostAudit(sinceDate) {
     ['state', '=', 'done'],
     ['purchase_id', '!=', false]
   ];
-  if (since) pickingDomain.push(['date_done', '>=', since]);
+  if (historySinceDate) pickingDomain.push(['date_done', '>=', `${historySinceDate} 00:00:00`]);
   const pickings = await searchRead('stock.picking', pickingDomain, ['id', 'name', 'date_done', 'purchase_id']);
 
   // ---- Part 2 input: posted landed costs in the period ----
   const costDomain = [['state', '=', 'done']];
   if (since) costDomain.push(['date', '>=', sinceDate]);
-  const postedCosts = await searchRead('stock.landed.cost', costDomain, ['id', 'name', 'date', 'picking_ids']);
+  const postedCosts = await searchRead('stock.landed.cost', costDomain, ['id', 'name', 'date', 'picking_ids', 'account_move_id']);
   const costIds = postedCosts.map((c) => c.id);
+
+  // When each landed cost was actually validated (its journal entry's
+  // creation time) - units sold before this moment are the ones whose share
+  // went to COGS. The 'date' field is the accounting date, which can differ.
+  const costValidatedAt = {};
+  try {
+    const moveIds = [...new Set(postedCosts.map((c) => relId(c.account_move_id)).filter((id) => id !== null))];
+    const entries = moveIds.length ? await searchReadIn('account.move', 'id', moveIds, [], ['id', 'create_date']) : [];
+    const createdById = {};
+    for (const e of entries) createdById[e.id] = e.create_date;
+    for (const c of postedCosts) costValidatedAt[c.id] = createdById[relId(c.account_move_id)] || null;
+  } catch (err) {
+    // no cutoff available - affected-sales view falls back to "all sales from this receipt"
+  }
 
   const adjustmentLines = costIds.length
     ? await searchReadIn('stock.valuation.adjustment.lines', 'cost_id', costIds, [],
@@ -621,11 +649,12 @@ async function getLandedCostAudit(sinceDate) {
   };
 
   // ---- Part 1 continued ----
-  const foreignPickings = pickings.filter(isForeign);
-  const foreignPickingIds = foreignPickings.map((p) => p.id);
+  const foreignAll = pickings.filter(isForeign);
+  const foreignPickings = foreignAll.filter(inPeriod);
+  const foreignAllIds = foreignAll.map((p) => p.id);
 
-  const costsOnForeign = foreignPickingIds.length
-    ? await searchReadIn('stock.landed.cost', 'picking_ids', foreignPickingIds, [['state', 'in', ['draft', 'done']]],
+  const costsOnForeign = foreignAllIds.length
+    ? await searchReadIn('stock.landed.cost', 'picking_ids', foreignAllIds, [['state', 'in', ['draft', 'done']]],
       ['id', 'name', 'state', 'picking_ids'])
     : [];
   const postedPickingIds = new Set();
@@ -635,6 +664,44 @@ async function getLandedCostAudit(sinceDate) {
       if (c.state === 'done') postedPickingIds.add(pid);
       else (draftNamesByPicking[pid] = draftNamesByPicking[pid] || []).push(c.name);
     }
+  }
+
+  // ---- Receipts that have SOME landed cost: which cost products are on them ----
+  const historyReceipts = [];
+  try {
+    const doneCosts = costsOnForeign.filter((c) => c.state === 'done');
+    const costLines = doneCosts.length
+      ? await searchReadIn('stock.landed.cost.lines', 'cost_id', doneCosts.map((c) => c.id), [], ['cost_id', 'product_id'])
+      : [];
+    const productsByCost = {};
+    for (const l of costLines) {
+      const cid = relId(l.cost_id);
+      (productsByCost[cid] = productsByCost[cid] || new Set()).add(relName(l.product_id));
+    }
+    const costsByPicking = {};
+    for (const c of doneCosts) {
+      for (const pid of (c.picking_ids || [])) (costsByPicking[pid] = costsByPicking[pid] || []).push(c);
+    }
+    for (const p of foreignAll) {
+      const costs = costsByPicking[p.id];
+      if (!costs || !costs.length) continue;
+      const info = orderInfo[relId(p.purchase_id)] || {};
+      const products = new Set();
+      for (const c of costs) for (const name of (productsByCost[c.id] || [])) if (name) products.add(name);
+      historyReceipts.push({
+        pickingId: p.id,
+        pickingName: p.name,
+        dateDone: p.date_done,
+        poName: info.name || relName(p.purchase_id),
+        vendor: info.vendor || null,
+        vendorKey: info.vendorId === undefined ? null : info.vendorId,
+        inPeriod: inPeriod(p),
+        costProducts: [...products],
+        landedCosts: costs.map((c) => c.name)
+      });
+    }
+  } catch (err) {
+    // leave historyReceipts empty - the "possibly missing" list just shows nothing
   }
 
   const missingPickings = foreignPickings.filter((p) => !postedPickingIds.has(p.id));
@@ -674,6 +741,7 @@ async function getLandedCostAudit(sinceDate) {
         vendor: info.vendor || null,
         productId,
         product: relName(move.product_id),
+        moveIds: [],
         receivedQty: 0,
         remainingQty: 0,
         receivedValue: 0,
@@ -681,6 +749,7 @@ async function getLandedCostAudit(sinceDate) {
       };
     }
     const row = receiptLineByKey[key];
+    if (!row.moveIds.includes(move.id)) row.moveIds.push(move.id);
     row.receivedQty += layer.quantity || 0;
     row.remainingQty += layer.remaining_qty || 0;
     row.receivedValue += layer.value || 0;
@@ -719,6 +788,8 @@ async function getLandedCostAudit(sinceDate) {
         costId,
         costName: cost.name || relName(a.cost_id),
         costDate: cost.date || null,
+        costValidatedAt: costValidatedAt[costId] || null,
+        moveId,
         pickingName: picking.name,
         poName: info.name || relName(picking.purchase_id),
         vendor: info.vendor || null,
@@ -731,10 +802,180 @@ async function getLandedCostAudit(sinceDate) {
     divertedByKey[key].allocated += a.additional_landed_cost || 0;
   }
 
+  const errors = {};
+  let bills = [];
+  try {
+    bills = await getUnappliedLandedCostBills(sinceDate);
+  } catch (err) {
+    errors.bills = String(err && err.message ? err.message : err);
+  }
+  let negativeRows = [];
+  try {
+    negativeRows = await getNegativeStockRows(since);
+  } catch (err) {
+    errors.negative = String(err && err.message ? err.message : err);
+  }
+
   return {
     receiptLines: Object.values(receiptLineByKey),
-    divertedLines: Object.values(divertedByKey)
+    divertedLines: Object.values(divertedByKey),
+    historyReceipts,
+    bills,
+    negativeRows,
+    errors
   };
+}
+
+// Posted vendor bills (in any currency - amounts read in company currency via
+// 'balance') that carry landed-cost lines (product flagged "Is a Landed
+// Cost"), with the landed cost documents created from each bill. Not limited
+// to foreign vendors: freight forwarders and clearing agents are often local.
+async function getUnappliedLandedCostBills(sinceDate) {
+  const domain = [
+    ['is_landed_costs_line', '=', true],
+    ['move_id.state', '=', 'posted'],
+    ['move_id.move_type', '=', 'in_invoice']
+  ];
+  if (sinceDate) domain.push(['date', '>=', sinceDate]);
+  const lines = await searchRead('account.move.line', domain, ['move_id', 'product_id', 'balance']);
+  const billIds = [...new Set(lines.map((l) => relId(l.move_id)).filter((id) => id !== null))];
+  if (!billIds.length) return [];
+
+  const bills = await searchReadIn('account.move', 'id', billIds, [], ['id', 'name', 'date', 'partner_id']);
+  const costs = await searchReadIn('stock.landed.cost', 'vendor_bill_id', billIds, [['state', 'in', ['draft', 'done']]],
+    ['id', 'name', 'state', 'amount_total', 'vendor_bill_id']);
+
+  const byBill = {};
+  for (const b of bills) {
+    byBill[b.id] = {
+      billId: b.id, billName: b.name, date: b.date, vendor: relName(b.partner_id),
+      lcLines: [], appliedCosts: [], draftCosts: []
+    };
+  }
+  for (const l of lines) {
+    const bill = byBill[relId(l.move_id)];
+    if (bill) bill.lcLines.push({ product: relName(l.product_id), amount: l.balance || 0 });
+  }
+  for (const c of costs) {
+    const bill = byBill[relId(c.vendor_bill_id)];
+    if (!bill) continue;
+    if (c.state === 'done') bill.appliedCosts.push({ id: c.id, name: c.name, amount: c.amount_total || 0 });
+    else bill.draftCosts.push(c.name);
+  }
+  return Object.values(byBill);
+}
+
+const OUT_LAYER_FIELDS = ['id', 'product_id', 'quantity', 'unit_cost', 'remaining_qty', 'stock_move_id', 'create_date'];
+
+// Deliveries made while stock was below zero. Two sources:
+//  - still waiting: outgoing layers whose remaining_qty is still negative
+//    (always shown, whatever the period - they're open problems);
+//  - already covered: Odoo's negative-stock correction layers (quantity 0,
+//    linked to the outgoing layer they fix), created in the period.
+// Known gap: when the receipt's price exactly matched the cost used on the
+// sale, Odoo creates no correction layer, so that covered sale can't be seen.
+async function getNegativeStockRows(since) {
+  const corrDomain = [
+    ['stock_valuation_layer_id', '!=', false],
+    ['stock_landed_cost_id', '=', false],
+    ['quantity', '=', 0]
+  ];
+  if (since) corrDomain.push(['create_date', '>=', since]);
+  const corrections = await searchRead('stock.valuation.layer', corrDomain, ['stock_valuation_layer_id', 'value', 'create_date']);
+
+  const correctionByOut = {};
+  for (const c of corrections) {
+    const outId = relId(c.stock_valuation_layer_id);
+    if (outId === null) continue;
+    const entry = correctionByOut[outId] || (correctionByOut[outId] = { value: 0, at: null });
+    entry.value += c.value || 0;
+    if (!entry.at || (c.create_date || '') > entry.at) entry.at = c.create_date;
+  }
+
+  // Linked layers with quantity < 0 only - vendor-bill price difference
+  // layers also link to a layer, but to an incoming one.
+  const correctedOuts = Object.keys(correctionByOut).length
+    ? await searchReadIn('stock.valuation.layer', 'id', Object.keys(correctionByOut).map(Number), [['quantity', '<', 0]], OUT_LAYER_FIELDS)
+    : [];
+  const waitingOuts = await searchRead('stock.valuation.layer',
+    [['quantity', '<', 0], ['remaining_qty', '<', 0]], OUT_LAYER_FIELDS);
+
+  const outsById = {};
+  for (const l of [...correctedOuts, ...waitingOuts]) outsById[l.id] = l;
+  const outs = Object.values(outsById);
+  if (!outs.length) return [];
+
+  const saleInfo = await getMoveSaleInfo([...new Set(outs.map((l) => relId(l.stock_move_id)).filter((id) => id !== null))]);
+
+  return outs.map((l) => {
+    const corr = correctionByOut[l.id];
+    return {
+      outLayerId: l.id,
+      productId: relId(l.product_id),
+      product: relName(l.product_id),
+      qty: -(l.quantity || 0),
+      unitCost: l.unit_cost,
+      date: l.create_date,
+      waitingQty: l.remaining_qty < 0 ? -l.remaining_qty : 0,
+      correction: corr ? corr.value : 0,
+      coveredAt: corr ? corr.at : null,
+      sale: saleInfo[relId(l.stock_move_id)] || null
+    };
+  });
+}
+
+// stock.move id -> { pickingId, pickingName, date, qty, saleOrderId,
+// saleOrderName, customer, priceUnit, currency }. saleOrderId is null for
+// moves that didn't come from a sale (returns to vendor, adjustments).
+async function getMoveSaleInfo(moveIds) {
+  if (!moveIds || !moveIds.length) return {};
+  const moves = await searchReadIn('stock.move', 'id', moveIds, [], ['id', 'sale_line_id', 'picking_id', 'date', 'product_qty']);
+  const saleLineIds = [...new Set(moves.map((m) => relId(m.sale_line_id)).filter((id) => id !== null))];
+  const saleLines = saleLineIds.length
+    ? await searchReadIn('sale.order.line', 'id', saleLineIds, [], ['id', 'order_id', 'price_unit'])
+    : [];
+  const saleLineById = {};
+  for (const l of saleLines) saleLineById[l.id] = l;
+  const orderIds = [...new Set(saleLines.map((l) => relId(l.order_id)).filter((id) => id !== null))];
+  const orders = orderIds.length
+    ? await searchReadIn('sale.order', 'id', orderIds, [], ['id', 'name', 'partner_id', 'date_order', 'currency_id'])
+    : [];
+  const orderById = {};
+  for (const o of orders) orderById[o.id] = o;
+
+  const map = {};
+  for (const m of moves) {
+    const line = saleLineById[relId(m.sale_line_id)];
+    const order = line ? orderById[relId(line.order_id)] : null;
+    map[m.id] = {
+      pickingId: relId(m.picking_id),
+      pickingName: relName(m.picking_id),
+      date: m.date,
+      qty: m.product_qty,
+      saleOrderId: order ? order.id : null,
+      saleOrderName: order ? order.name : null,
+      customer: order ? relName(order.partner_id) : null,
+      priceUnit: line ? line.price_unit : null,
+      currency: order ? relName(order.currency_id) : null
+    };
+  }
+  return map;
+}
+
+// Every stock-moving valuation layer of one product, oldest first - the input
+// for lib/landed-audit.js's replayFifo() ("which sales used this receipt").
+async function getProductLayers(productId) {
+  const layers = await searchRead('stock.valuation.layer',
+    [['product_id', '=', productId], ['quantity', '!=', 0]],
+    ['id', 'stock_move_id', 'quantity', 'remaining_qty', 'create_date'],
+    { order: 'create_date asc, id asc' });
+  return layers.map((l) => ({
+    id: l.id,
+    moveId: relId(l.stock_move_id),
+    quantity: l.quantity,
+    remainingQty: l.remaining_qty,
+    createDate: l.create_date
+  }));
 }
 
 // ---------------- Message routing ----------------
@@ -752,7 +993,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     SEARCH_CUSTOMERS: () => searchCustomers(msg.name),
     GET_ORDERS_FOR_PARTNERS: () => getOrdersForPartners(msg.partnerIds),
     GET_CUSTOMER_TOP_PRODUCTS: () => getCustomerTopProducts(msg.partnerId),
-    GET_LANDED_COST_AUDIT: () => getLandedCostAudit(msg.sinceDate)
+    GET_LANDED_COST_AUDIT: () => getLandedCostAudit(msg.sinceDate),
+    GET_PRODUCT_LAYERS: () => getProductLayers(msg.productId),
+    GET_MOVE_SALE_INFO: () => getMoveSaleInfo(msg.moveIds)
   };
 
   const handler = handlers[msg && msg.type];

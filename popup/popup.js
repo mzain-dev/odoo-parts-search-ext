@@ -7,7 +7,8 @@
   const { shapeCustomerCard, sortOrders, buyingPattern, shapeTopProducts,
     buildOrdersSpreadsheetText, buildCustomerSummaryText } = window.CustomerData;
   const { filterCustomers, parseCustomerSearchText } = window.Filters;
-  const { sinceDateForRange, auditLandedCosts, buildAuditSpreadsheetText } = window.LandedAudit;
+  const { sinceDateForRange, auditLandedCosts, buildAuditSpreadsheetText,
+    replayFifo, replayMatchesOdoo, affectedSales } = window.LandedAudit;
 
   const $ = (id) => document.getElementById(id);
 
@@ -94,6 +95,11 @@
   const landedFixNowEl = $('landed-fix-now');
   const landedAlreadySoldEl = $('landed-already-sold');
   const landedWentToCogsEl = $('landed-went-to-cogs');
+  const landedIncompleteEl = $('landed-incomplete');
+  const landedBillsEl = $('landed-bills');
+  const landedNegativeEl = $('landed-negative');
+  const landedTabButtons = Array.from(document.querySelectorAll('.landed-tab-btn'));
+  const landedPanels = Array.from(document.querySelectorAll('.landed-panel'));
 
   let odooTabId = null;
   let odooOrigin = null; // e.g. https://digandlift.odoo.com - for "open in Odoo" links
@@ -1215,50 +1221,167 @@
     chrome.tabs.create({ url: `${odooOrigin}/web#id=${id}&model=${model}&view_type=form` });
   }
 
-  function clickableRow(opts, model, id) {
-    const row = buildLineRow(opts);
-    if (odooOrigin && id) {
-      row.classList.add('clickable-row');
-      row.title = 'Open in Odoo';
-      row.addEventListener('click', () => openInOdoo(model, id));
-    }
-    return row;
+  function smallButton(label, onClick) {
+    const btn = document.createElement('button');
+    btn.className = 'show-more-btn';
+    btn.textContent = label;
+    btn.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+    return btn;
   }
 
-  function draftNote(r) {
-    return r.draftLandedCosts.length
-      ? { text: `Draft landed cost not posted yet: ${r.draftLandedCosts.join(', ')}`, tone: 'info' }
+  function detailNote(container, text, tone) {
+    const p = document.createElement('p');
+    p.className = 'landed-detail-note' + (tone ? ` line-row-sub tone-${tone}` : '');
+    p.textContent = text;
+    container.appendChild(p);
+    return p;
+  }
+
+  // A row that expands in place on click. The detail area is built the first
+  // time it's opened (buildDetail may fetch from Odoo) and kept after that.
+  // links: [{ label, model, id }] rendered as "Open ... in Odoo" buttons.
+  function expandableRow(rowOpts, links, buildDetail) {
+    const wrapper = document.createElement('div');
+    const row = buildLineRow(rowOpts);
+    row.classList.add('clickable-row');
+    const detail = document.createElement('div');
+    detail.className = 'customer-drilldown';
+    detail.style.display = 'none';
+    let built = false;
+    row.addEventListener('click', () => {
+      const opening = detail.style.display === 'none';
+      detail.style.display = opening ? 'block' : 'none';
+      if (!opening || built) return;
+      built = true;
+      const usable = (links || []).filter((l) => l.id && odooOrigin);
+      if (usable.length) {
+        const actions = document.createElement('div');
+        actions.className = 'landed-detail-actions';
+        for (const l of usable) actions.appendChild(smallButton(l.label, () => openInOdoo(l.model, l.id)));
+        detail.appendChild(actions);
+      }
+      if (buildDetail) buildDetail(detail);
+    });
+    wrapper.appendChild(row);
+    wrapper.appendChild(detail);
+    return wrapper;
+  }
+
+  // "Which sales used units from this receipt" - replays the product's
+  // valuation history (see replayFifo) and, for a late landed cost, splits the
+  // amount that went to COGS across those sales.
+  async function loadAffectedSales(container, { productId, moveIds, cutoff, divertedValue }) {
+    const heading = detailNote(container, 'Loading the sales that used these units...');
+    const layersRes = await sendToOdoo('GET_PRODUCT_LAYERS', { productId });
+    if (!layersRes.ok) { heading.textContent = `Could not load sales: ${layersRes.error}`; return; }
+
+    const layers = layersRes.data;
+    const { consumption, remainingByLayer } = replayFifo(layers);
+    const exact = replayMatchesOdoo(layers, remainingByLayer, moveIds);
+    const rows = affectedSales({ consumption, receiptMoveIds: moveIds, cutoff, divertedValue });
+    if (!rows.length) { heading.textContent = 'No sales found that used units from this receipt.'; return; }
+
+    const infoRes = await sendToOdoo('GET_MOVE_SALE_INFO', { moveIds: rows.map((r) => r.outMoveId) });
+    const info = infoRes.ok ? infoRes.data : {};
+
+    heading.textContent = typeof divertedValue === 'number'
+      ? 'Sales that carry this missing cost (their margin shows higher than real):'
+      : 'Sales that used units from this receipt:';
+    heading.className = 'landed-detail-note';
+
+    for (const r of rows) {
+      const sale = info[r.outMoveId] || {};
+      const isSale = !!sale.saleOrderId;
+      const rowEl = buildLineRow({
+        title: isSale ? `${sale.saleOrderName} · ${sale.customer || 'Unknown customer'}` : `${sale.pickingName || 'Transfer'} (not a sale)`,
+        subLines: [
+          `${sale.pickingName || '—'} · ${formatDate(r.outDate)} · qty ${num(r.qty)}`,
+          r.viaNegative ? { text: 'Sold before this stock was received (negative stock)', tone: 'danger' } : null,
+          r.perUnit !== null ? { text: `Cost understated by ${num(r.perUnit)} OMR per unit`, tone: 'warning' } : null
+        ],
+        value: r.share !== null ? `${num(r.share)} OMR` : `${num(r.qty)} units`
+      });
+      if (isSale && odooOrigin) {
+        rowEl.classList.add('clickable-row');
+        rowEl.title = 'Open sale order in Odoo';
+        rowEl.addEventListener('click', (e) => { e.stopPropagation(); openInOdoo('sale.order', sale.saleOrderId); });
+      }
+      container.appendChild(rowEl);
+    }
+    if (!exact) {
+      detailNote(container, 'Approximate: some of this receipt\'s history couldn\'t be matched exactly (e.g. returns), so check the list in Odoo.', 'info');
+    }
+  }
+
+  function draftNote(names) {
+    return names && names.length
+      ? { text: `Draft landed cost not posted yet: ${names.join(', ')}`, tone: 'info' }
       : null;
   }
 
+  function receiptLinks(r) {
+    return [{ label: 'Open receipt in Odoo', model: 'stock.picking', id: r.pickingId }];
+  }
+
   function fixNowRowNode(r) {
-    return clickableRow({
+    return expandableRow({
       title: r.product || 'Unknown part',
       subLines: [
         `${r.pickingName} · ${r.poName || '—'} · ${formatDate(r.dateDone)}`,
         r.vendor || 'Unknown vendor',
         r.soldQty > 0 ? { text: `${num(r.soldQty)} of ${num(r.receivedQty)} already sold`, tone: 'warning' } : null,
-        draftNote(r)
+        draftNote(r.draftLandedCosts)
       ],
       value: `${num(r.remainingQty)} in stock`,
       subValue: `of ${num(r.receivedQty)} received`
-    }, 'stock.picking', r.pickingId);
+    }, receiptLinks(r), r.soldQty > 0
+      ? (el) => loadAffectedSales(el, { productId: r.productId, moveIds: r.moveIds })
+      : null);
   }
 
   function alreadySoldRowNode(r) {
-    return clickableRow({
+    return expandableRow({
       title: r.product || 'Unknown part',
       subLines: [
         `${r.pickingName} · ${r.poName || '—'} · ${formatDate(r.dateDone)}`,
         r.vendor || 'Unknown vendor',
-        draftNote(r)
+        draftNote(r.draftLandedCosts)
       ],
       value: `${num(r.receivedQty)} sold`
-    }, 'stock.picking', r.pickingId);
+    }, receiptLinks(r), (el) => loadAffectedSales(el, { productId: r.productId, moveIds: r.moveIds }));
+  }
+
+  function incompleteRowNode(r) {
+    return expandableRow({
+      title: `${r.pickingName} · ${r.poName || '—'}`,
+      subLines: [
+        `${r.vendor || 'Unknown vendor'} · ${formatDate(r.dateDone)}`,
+        `Posted: ${r.costProducts.join(', ') || '—'} (${r.landedCosts.join(', ')})`,
+        { text: `Usually also: ${r.missing.map((m) => `${m.product} (${m.seen} of ${m.of} receipts)`).join(', ')}`, tone: 'warning' }
+      ],
+      value: `${r.missing.length} missing`
+    }, receiptLinks(r), null);
+  }
+
+  function billRowNode(r) {
+    const applied = (r.appliedCosts || []).map((c) => c.name).join(', ');
+    return expandableRow({
+      title: r.billName || 'Vendor bill',
+      subLines: [
+        `${r.vendor || 'Unknown vendor'} · ${formatDate(r.date)}`,
+        r.products.join(', '),
+        r.status === 'partial'
+          ? { text: `Partly applied: ${num(r.appliedTotal)} of ${num(r.lcTotal)} OMR (${applied})`, tone: 'warning' }
+          : { text: 'Not applied - no posted landed cost from this bill', tone: 'danger' },
+        draftNote(r.draftCosts)
+      ],
+      value: `${num(r.unapplied)} OMR`,
+      subValue: 'not applied'
+    }, [{ label: 'Open bill in Odoo', model: 'account.move', id: r.billId }], null);
   }
 
   function wentToCogsRowNode(r) {
-    return clickableRow({
+    return expandableRow({
       title: r.product || 'Unknown part',
       subLines: [
         `${r.costName} · ${formatDate(r.costDate)} · ${r.pickingName}`,
@@ -1269,10 +1392,35 @@
       ],
       value: `${num(r.divertedValue)} OMR`,
       subValue: 'to COGS'
-    }, 'stock.landed.cost', r.costId);
+    }, [{ label: 'Open landed cost in Odoo', model: 'stock.landed.cost', id: r.costId }],
+    (el) => loadAffectedSales(el, {
+      productId: r.productId, moveIds: [r.moveId], cutoff: r.costValidatedAt, divertedValue: r.divertedValue
+    }));
+  }
+
+  function negativeRowNode(r) {
+    const sale = r.sale || {};
+    return expandableRow({
+      title: r.product || 'Unknown part',
+      subLines: [
+        `${sale.saleOrderName || '—'} · ${sale.customer || 'Unknown customer'}`,
+        `${sale.pickingName || '—'} · ${formatDate(r.date)} · qty ${num(r.qty)} · cost used ${num(r.unitCost)}`,
+        r.status === 'waiting'
+          ? { text: `Still ${num(r.waitingQty)} short - waiting for a receipt`, tone: 'danger' }
+          : { text: `Covered by a later receipt on ${formatDate(r.coveredAt)}`, tone: 'info' },
+        Math.abs(r.correction) > 0.0005
+          ? { text: `Cost corrected afterwards: ${r.correction > 0 ? '+' : ''}${num(r.correction)} OMR (not on the sale margin)`, tone: 'warning' }
+          : null
+      ],
+      value: r.status === 'waiting' ? 'Waiting' : 'Covered'
+    }, [
+      { label: 'Open sale order', model: 'sale.order', id: sale.saleOrderId },
+      { label: 'Open delivery', model: 'stock.picking', id: sale.pickingId }
+    ], null);
   }
 
   function renderLandedList(container, items, rowFn, emptyText) {
+    clear(container);
     if (!items.length) { emptyNote(container, emptyText); return; }
     renderExpandableList(container, items, rowFn, 15);
   }
@@ -1280,13 +1428,19 @@
   function renderLandedAudit(audit) {
     const t = audit.totals;
     buildStatGrid(landedTotalsEl, [
-      { label: 'Fix now', value: String(t.fixNowLines), sub: `${t.fixNowReceipts} receipt${t.fixNowReceipts === 1 ? '' : 's'}`, highlight: true },
-      { label: 'Already sold', value: String(t.alreadySoldLines), sub: `${t.alreadySoldReceipts} receipt${t.alreadySoldReceipts === 1 ? '' : 's'}` },
-      { label: 'Went to COGS', value: num(t.wentToCogsValue), sub: `OMR · ${t.wentToCogsLines} line${t.wentToCogsLines === 1 ? '' : 's'}`, small: true }
+      { label: 'Fix now', value: String(t.fixNowLines), sub: `${t.fixNowReceipts} receipt${t.fixNowReceipts === 1 ? '' : 's'} · ${t.incompleteReceipts} maybe incomplete`, highlight: true },
+      { label: 'Bills not applied', value: num(t.billsValue), sub: `OMR · ${t.billsCount} bill${t.billsCount === 1 ? '' : 's'}`, small: true },
+      { label: 'Went to COGS', value: num(t.wentToCogsValue), sub: `OMR · ${t.wentToCogsLines} line${t.wentToCogsLines === 1 ? '' : 's'}`, small: true },
+      { label: 'Negative stock', value: String(t.negativeCount), sub: `${t.negativeWaiting} still waiting` }
     ]);
     renderLandedList(landedFixNowEl, audit.fixNow, fixNowRowNode, 'Nothing to fix - every foreign receipt with stock has a landed cost.');
     renderLandedList(landedAlreadySoldEl, audit.alreadySold, alreadySoldRowNode, 'None in this period.');
+    renderLandedList(landedIncompleteEl, audit.incomplete, incompleteRowNode, 'None found (needs at least 3 past receipts per vendor to learn from).');
+    if (audit.errors.bills) emptyNote(landedBillsEl, `Could not check bills: ${audit.errors.bills}`);
+    else renderLandedList(landedBillsEl, audit.bills, billRowNode, 'Every landed-cost bill in this period has been applied.');
     renderLandedList(landedWentToCogsEl, audit.wentToCogs, wentToCogsRowNode, 'None in this period.');
+    if (audit.errors.negative) emptyNote(landedNegativeEl, `Could not check negative stock: ${audit.errors.negative}`);
+    else renderLandedList(landedNegativeEl, audit.negativeSales, negativeRowNode, 'No sales made with negative stock in this period.');
   }
 
   async function loadLandedAudit() {
@@ -1316,6 +1470,13 @@
       landedRange = btn.dataset.range;
       landedRangeButtons.forEach((b) => b.classList.toggle('active', b === btn));
       loadLandedAudit();
+    });
+  });
+
+  landedTabButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      landedTabButtons.forEach((b) => b.classList.toggle('active', b === btn));
+      landedPanels.forEach((panel) => panel.classList.toggle('active', panel.id === `ltab-${btn.dataset.ltab}`));
     });
   });
 

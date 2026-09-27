@@ -177,7 +177,7 @@
 
     <!-- ================= LANDED COST MODE ================= -->
     <div id="landed-mode" style="display:none">
-      <p class="landed-intro">Foreign purchases only. Receipts with no posted landed cost, and landed costs posted too late.</p>
+      <p class="landed-intro">Landed cost checks for foreign purchases: missing, not applied from bills, posted too late, and sales made with negative stock.</p>
 
       <div class="toggle-bar quick-filter-bar" id="landed-range-bar">
         <button data-range="30" class="quick-btn range-btn active">30 days</button>
@@ -195,17 +195,49 @@
       <div id="landed-results" style="display:none">
         <div id="landed-totals" class="stat-grid"></div>
 
-        <h4 class="landed-heading tone-warning">Missing landed cost - still in stock</h4>
-        <p class="landed-hint">Post the landed cost now - it will still reach the product cost for the units in stock.</p>
-        <div id="landed-fix-now"></div>
+        <div class="toggle-bar tabs">
+          <button data-ltab="missing" class="landed-tab-btn active">Missing</button>
+          <button data-ltab="bills" class="landed-tab-btn">Bills</button>
+          <button data-ltab="late" class="landed-tab-btn">Posted late</button>
+          <button data-ltab="negative" class="landed-tab-btn">Neg. stock</button>
+        </div>
+        <p class="landed-hint">Tap a row for details and the sales it affected.</p>
 
-        <h4 class="landed-heading tone-danger">Missing landed cost - already sold</h4>
-        <p class="landed-hint">Too late for the product cost. When the bill comes, it will go to COGS.</p>
-        <div id="landed-already-sold"></div>
+        <!-- Missing -->
+        <div class="tab-panel landed-panel active" id="ltab-missing">
+          <h4 class="landed-heading tone-warning">No landed cost - still in stock</h4>
+          <p class="landed-hint">Post the landed cost now - it will still reach the product cost for the units in stock.</p>
+          <div id="landed-fix-now"></div>
 
-        <h4 class="landed-heading tone-muted">Posted late - went to COGS</h4>
-        <p class="landed-hint">Landed cost posted after the parts were sold. Sale margin shows higher than it really was.</p>
-        <div id="landed-went-to-cogs"></div>
+          <h4 class="landed-heading tone-danger">No landed cost - already sold</h4>
+          <p class="landed-hint">Too late for the product cost. When the bill comes, it will go to COGS.</p>
+          <div id="landed-already-sold"></div>
+
+          <h4 class="landed-heading tone-warning">Has a landed cost - but one may be missing</h4>
+          <p class="landed-hint">This vendor's shipments usually carry more charges than this receipt has.</p>
+          <div id="landed-incomplete"></div>
+        </div>
+
+        <!-- Bills -->
+        <div class="tab-panel landed-panel" id="ltab-bills">
+          <h4 class="landed-heading tone-warning">Bills with landed cost lines - not applied</h4>
+          <p class="landed-hint">Posted vendor bills with landed-cost products, but no posted landed cost created from them (or only part). All vendors, local too.</p>
+          <div id="landed-bills"></div>
+        </div>
+
+        <!-- Posted late -->
+        <div class="tab-panel landed-panel" id="ltab-late">
+          <h4 class="landed-heading tone-muted">Posted late - went to COGS</h4>
+          <p class="landed-hint">Landed cost posted after the parts were sold. Tap to see which sales carry the missing cost.</p>
+          <div id="landed-went-to-cogs"></div>
+        </div>
+
+        <!-- Negative stock -->
+        <div class="tab-panel landed-panel" id="ltab-negative">
+          <h4 class="landed-heading tone-danger">Sold with negative stock</h4>
+          <p class="landed-hint">Delivered before the stock was received. Landed costs for these units always go to COGS.</p>
+          <div id="landed-negative"></div>
+        </div>
       </div>
     </div>
 

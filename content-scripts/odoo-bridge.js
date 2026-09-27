@@ -271,9 +271,20 @@ async function getPurchaseHistory(productId) {
 // by how a given Odoo instance uses stock.landed.cost, and plenty of orders
 // legitimately have none (local purchases) - either way, any failure here
 // (missing field, no receipt yet) must resolve to "not tracked" for that
-// order, never an error or a misleading blank/zero on the Cost tab. Returns
-// a map of orderId -> { totalValue, entries: [{ costName, value }] };
-// an order with no landed cost simply has no key.
+// order, never an error or a misleading blank/zero on the Cost tab.
+//
+// A landed cost that applied to this receipt but produced NO valuation layer
+// for this product is surfaced separately as "untouched", not dropped. Per
+// Odoo's own AVCO rule, a landed cost posted after a receipt's stock is
+// already fully sold goes 100% to COGS with no Stock Valuation line at all -
+// that's a real risk signal ("this cost may never have reached the product's
+// cost field"), not the same as "no landed cost exists". It's still only a
+// flag to check, not a confirmed diagnosis: the same empty result would also
+// occur if the document was simply never configured to apply to this
+// product's line, which this data can't distinguish.
+//
+// Returns a map of orderId -> { totalValue, entries: [{ costName, value }],
+// untouched: [{ costName, date }] }; an order with neither simply has no key.
 async function getLandedCostsForOrders(productId, orderIds) {
   try {
     if (!orderIds || !orderIds.length) return {};
@@ -285,7 +296,7 @@ async function getLandedCostsForOrders(productId, orderIds) {
     const landedCosts = await searchRead(
       'stock.landed.cost',
       [['picking_ids', 'in', pickingIds]],
-      ['id', 'name', 'picking_ids']
+      ['id', 'name', 'picking_ids', 'date']
     );
     if (!landedCosts.length) return {};
 
@@ -295,7 +306,6 @@ async function getLandedCostsForOrders(productId, orderIds) {
       [['product_id', '=', productId], ['stock_landed_cost_id', 'in', costIds]],
       ['value', 'stock_landed_cost_id']
     );
-    if (!layers.length) return {};
 
     // Value this specific product picked up from each landed cost document -
     // summed defensively in case a document created more than one layer for it.
@@ -306,20 +316,48 @@ async function getLandedCostsForOrders(productId, orderIds) {
       valueByCostId[costId] = (valueByCostId[costId] || 0) + (l.value || 0);
     }
 
+    // Odoo splits every landed cost across products/moves in
+    // stock.valuation.adjustment.lines BEFORE deciding whether that split
+    // lands in a stock.valuation.layer or gets diverted to COGS - so this is
+    // the only place the diverted amount for an "untouched" cost still shows
+    // up. additional_landed_cost is the amount allocated to this product.
+    // Fetched defensively: if this model/field isn't available on some
+    // deployment, the untouched flag should still work, just without a value.
+    const allocatedByCostId = {};
+    try {
+      const adjustmentLines = await searchRead(
+        'stock.valuation.adjustment.lines',
+        [['product_id', '=', productId], ['cost_id', 'in', costIds]],
+        ['additional_landed_cost', 'cost_id']
+      );
+      for (const a of adjustmentLines) {
+        const costId = Array.isArray(a.cost_id) ? a.cost_id[0] : null;
+        if (costId === null) continue;
+        allocatedByCostId[costId] = (allocatedByCostId[costId] || 0) + (a.additional_landed_cost || 0);
+      }
+    } catch (err) {
+      // leave allocatedByCostId empty - untouched entries fall back to no value
+    }
+
     const result = {};
     for (const order of orders) {
       const orderPickingIds = new Set(order.picking_ids || []);
       const entries = [];
+      const untouched = [];
       let totalValue = 0;
       for (const lc of landedCosts) {
         const touchesThisOrder = (lc.picking_ids || []).some((pid) => orderPickingIds.has(pid));
         if (!touchesThisOrder) continue;
         const value = valueByCostId[lc.id];
-        if (typeof value !== 'number') continue; // this document never touched OUR product
+        if (typeof value !== 'number') {
+          const divertedValue = typeof allocatedByCostId[lc.id] === 'number' ? allocatedByCostId[lc.id] : null;
+          untouched.push({ costName: lc.name, date: lc.date, divertedValue });
+          continue;
+        }
         entries.push({ costName: lc.name, value });
         totalValue += value;
       }
-      if (entries.length) result[order.id] = { totalValue, entries };
+      if (entries.length || untouched.length) result[order.id] = { totalValue, entries, untouched };
     }
     return result;
   } catch (err) {

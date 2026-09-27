@@ -2,7 +2,7 @@
   const { shapeStockByLocation, computeStockValue, shapeIncomingStock, shapeReservedTransfers,
     shapeCostHistory, sortCostHistory, groupCostHistoryByType, costTrend, vendorComparison, attachLandedCost,
     shapeSalesHistory, sortSalesTransactions, groupSalesByMonth, attachFulfillment,
-    marginPerSale, topCustomersForPart, priceDrift,
+    marginPerSale, topCustomersForPart, priceDrift, soldBeforeLateLandedCost,
     buildStockSummaryText, buildCostSummaryText, buildSalesSummaryText } = window.PartData;
   const { shapeCustomerCard, sortOrders, buyingPattern, shapeTopProducts,
     buildOrdersSpreadsheetText, buildCustomerSummaryText } = window.CustomerData;
@@ -239,7 +239,11 @@
     parent.appendChild(el);
   }
 
-  function buildLineRow({ title, sub, sub2, sub3, value, subValue, titleBadge }) {
+  // subLines: array of sub-line values (string or {text,tone}, falsy entries
+  // skipped) - an array rather than fixed sub/sub2/sub3 params since some
+  // rows need a variable number of status lines (delivery + invoice + a
+  // late-landed-cost warning, for instance).
+  function buildLineRow({ title, subLines, value, subValue, titleBadge }) {
     const row = document.createElement('div');
     row.className = 'line-row';
     const main = document.createElement('div');
@@ -252,9 +256,7 @@
       t.appendChild(titleBadge);
     }
     main.appendChild(t);
-    appendSubLine(main, sub);
-    appendSubLine(main, sub2);
-    appendSubLine(main, sub3);
+    for (const line of (subLines || [])) appendSubLine(main, line);
     const valWrap = document.createElement('div');
     valWrap.className = 'line-row-value';
     valWrap.textContent = value;
@@ -528,7 +530,7 @@
       for (const loc of shaped.byLocation) {
         lineRow(stockLocationsEl, {
           title: loc.location,
-          sub: `Reserved: ${num(loc.reserved)}`,
+          subLines: [`Reserved: ${num(loc.reserved)}`],
           value: num(loc.qty)
         });
       }
@@ -546,7 +548,7 @@
       for (const item of reserved.items) {
         lineRow(stockReservedEl, {
           title: item.pickingName || 'Transfer',
-          sub: `${item.pickingType || 'Transfer'}${item.origin ? ' · For ' + item.origin : ''} · ${item.location || 'Unknown location'}`,
+          subLines: [`${item.pickingType || 'Transfer'}${item.origin ? ' · For ' + item.origin : ''} · ${item.location || 'Unknown location'}`],
           value: num(item.qty)
         });
       }
@@ -561,7 +563,7 @@
       for (const item of incoming.items) {
         lineRow(list, {
           title: item.orderName || 'Purchase order',
-          sub: `Expected ${formatDate(item.datePlanned)}`,
+          subLines: [`Expected ${formatDate(item.datePlanned)}`],
           value: num(item.remaining)
         });
       }
@@ -573,11 +575,21 @@
     const landedNote = (typeof c.priceOmr === 'number' && typeof c.landedPerUnit === 'number')
       ? { text: `Landed unit cost: ${num(c.priceOmr)} + ${num(c.landedPerUnit)} = ${num(c.priceOmr + c.landedPerUnit)} OMR`, tone: 'primary' }
       : null;
+    const untouchedDescs = (c.landedUntouched || [])
+      .map((u) => (typeof u.divertedValue === 'number' ? `${u.costName}: ${num(u.divertedValue)} OMR` : u.costName))
+      .filter(Boolean)
+      .join(', ');
+    const lateLandedWarning = untouchedDescs
+      ? { text: `Landed cost applied to this shipment but not reflected in cost (${untouchedDescs}) - check if it went entirely to COGS`, tone: 'warning' }
+      : null;
     return buildLineRow({
       title: c.order || 'Purchase order',
       titleBadge: purchaseTypeBadge(c.purchaseType),
-      sub: `${c.vendor || 'Unknown vendor'} · ${formatDate(c.date)} · qty ${num(c.qty)}`,
-      sub2: landedNote,
+      subLines: [
+        `${c.vendor || 'Unknown vendor'} · ${formatDate(c.date)} · qty ${num(c.qty)}`,
+        landedNote,
+        lateLandedWarning
+      ],
       value: formatMoney(c.price, c.currency),
       subValue: omrNote(c.currency, c.priceOmr)
     });
@@ -618,7 +630,7 @@
     renderExpandableList(costVendorsEl, sorted, (v) => buildLineRow({
       title: v.vendor,
       titleBadge: purchaseTypeBadge(v.purchaseType),
-      sub: `Most recent: ${formatDate(v.date)}`,
+      subLines: [`Most recent: ${formatDate(v.date)}`],
       value: formatMoney(v.price, v.currency),
       subValue: omrNote(v.currency, v.priceOmr)
     }), 10);
@@ -635,6 +647,10 @@
 
   function renderCostTab(costHistoryWithLanded, avgCost) {
     costHistoryState = costHistoryWithLanded;
+    lateLandedCostDates = costHistoryWithLanded
+      .flatMap((c) => c.landedUntouched || [])
+      .map((u) => u.date)
+      .filter(Boolean);
     costSortBy = 'date';
     vendorSortBy = 'price';
     resetSortBar(costHistorySortButtons, 'date');
@@ -673,6 +689,21 @@
     return { text: `${verb}: ${list}`, tone: 'success' };
   }
 
+  // Dates of every landed cost found in this part's purchase history that
+  // never produced a valuation layer for it (see attachLandedCost's
+  // landedUntouched) - set in renderCostTab, read here to flag sales that
+  // happened before one of those posted (the PDF's core "late landed cost"
+  // scenario: the sale's cost was locked in without a landed cost that
+  // arrived afterward). An existential check, not a receipt-level trace -
+  // it can't prove THIS sale drew from THAT receipt, only that a landed
+  // cost affecting this part was still outstanding at time of sale.
+  let lateLandedCostDates = [];
+
+  function lateLandedCostWarning(dateOrder) {
+    if (!soldBeforeLateLandedCost(dateOrder, lateLandedCostDates)) return null;
+    return { text: 'Sold before a landed cost was posted for this part - margin may be understated', tone: 'warning' };
+  }
+
   function salesTransactionRowNode(t) {
     const marginParts = [];
     if (typeof t.marginAvg === 'number') marginParts.push(`avg ${num(t.marginAvg)}`);
@@ -681,9 +712,12 @@
     const detail = deliveryInvoiceByLine[t.line_id];
     return buildLineRow({
       title: t.customer,
-      sub: `${t.order_name || 'Sale order'} · ${formatDate(t.date_order)} · qty ${num(t.product_uom_qty)}${marginText ? ' · ' + marginText : ''}`,
-      sub2: fulfillmentLine(t.deliveryStatus, 'delivery', detail && detail.doNumbers),
-      sub3: fulfillmentLine(t.invoiceStatus, 'invoice', detail && detail.invoiceNumbers),
+      subLines: [
+        `${t.order_name || 'Sale order'} · ${formatDate(t.date_order)} · qty ${num(t.product_uom_qty)}${marginText ? ' · ' + marginText : ''}`,
+        fulfillmentLine(t.deliveryStatus, 'delivery', detail && detail.doNumbers),
+        fulfillmentLine(t.invoiceStatus, 'invoice', detail && detail.invoiceNumbers),
+        lateLandedCostWarning(t.date_order)
+      ],
       value: formatMoney(t.price_unit, t.currency),
       subValue: omrNote(t.currency, t.price_unit_omr)
     });
@@ -728,9 +762,12 @@
     const detail = deliveryInvoiceByLine[line.line_id];
     return buildLineRow({
       title: line.order_name || 'Sale order',
-      sub: formatDate(line.date_order),
-      sub2: fulfillmentLine(line.deliveryStatus, 'delivery', detail && detail.doNumbers),
-      sub3: fulfillmentLine(line.invoiceStatus, 'invoice', detail && detail.invoiceNumbers),
+      subLines: [
+        formatDate(line.date_order),
+        fulfillmentLine(line.deliveryStatus, 'delivery', detail && detail.doNumbers),
+        fulfillmentLine(line.invoiceStatus, 'invoice', detail && detail.invoiceNumbers),
+        lateLandedCostWarning(line.date_order)
+      ],
       value: `qty ${num(line.product_uom_qty)}`
     });
   }
@@ -745,7 +782,7 @@
     const expanded = expandedTopCustomerId === c.customerId;
     const row = buildLineRow({
       title: `${expanded ? '▾' : '▸'} ${c.customer}`,
-      sub: `${c.orders} order${c.orders === 1 ? '' : 's'} · ${c.deliveredCount} delivered · ${c.invoicedCount} invoiced`,
+      subLines: [`${c.orders} order${c.orders === 1 ? '' : 's'} · ${c.deliveredCount} delivered · ${c.invoicedCount} invoiced`],
       value: `${num(c.qty)} units`
     });
     row.classList.add('clickable-row');
@@ -870,7 +907,7 @@
 
     const salesShaped = shapeSalesHistory(salesTransactionsState, { windowDays: 90 });
     const drift = priceDrift(currentPart.list_price, salesTransactionsState, { windowDays: 90 });
-    sections.push(buildSalesSummaryText(salesShaped, drift, topCustomersState, salesTransactionsState));
+    sections.push(buildSalesSummaryText(salesShaped, drift, topCustomersState, salesTransactionsState, lateLandedCostDates));
 
     return sections.join('\n\n');
   }
@@ -1056,7 +1093,7 @@
   function orderRowNode(o) {
     return buildLineRow({
       title: o.name,
-      sub: formatDate(o.date_order),
+      subLines: [formatDate(o.date_order)],
       value: num(o.amount_total),
       titleBadge: (() => {
         const span = document.createElement('span');
@@ -1141,7 +1178,7 @@
     } else {
       renderExpandableList(customerTopProductsEl, topProducts, (p) => buildLineRow({
         title: p.product,
-        sub: `${p.orders} order${p.orders === 1 ? '' : 's'}`,
+        subLines: [`${p.orders} order${p.orders === 1 ? '' : 's'}`],
         value: `${num(p.qty)} units`
       }), 10);
     }

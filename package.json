@@ -1,0 +1,9 @@
+{
+  "name": "parts-insight-for-odoo",
+  "version": "1.2.0",
+  "private": true,
+  "description": "Chrome extension: read-only parts, customer and landed cost insight for Odoo 17.",
+  "scripts": {
+    "test": "node tests/run-all.js"
+  }
+}

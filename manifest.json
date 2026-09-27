@@ -1,27 +1,44 @@
 {
   "manifest_version": 3,
-  "name": "Parts & Customer Lookup",
-  "version": "1.0.0",
-  "description": "Read-only lookup for spare parts (stock, cost, sales history) and customers, active only while logged into Odoo.",
+  "name": "Parts Insight for Odoo",
+  "short_name": "Parts Insight",
+  "version": "1.2.0",
+  "description": "Read-only lookup for spare parts, customers and landed cost checks, live from your Odoo session.",
   "action": {
     "default_popup": "popup/popup.html",
-    "default_icon": "icons/icon48.png"
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    },
+    "default_title": "Parts Insight for Odoo"
   },
   "side_panel": {
     "default_path": "popup/popup.html"
   },
   "icons": {
     "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
   "content_scripts": [
     {
-      "matches": ["https://digandlift.odoo.com/*"],
-      "js": ["content-scripts/odoo-bridge.js"],
+      "matches": [
+        "https://digandlift.odoo.com/*"
+      ],
+      "js": [
+        "content-scripts/odoo-bridge.js"
+      ],
       "run_at": "document_idle"
     }
   ],
-  "permissions": ["activeTab", "scripting", "sidePanel", "clipboardWrite"],
-  "host_permissions": ["https://digandlift.odoo.com/*"]
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "sidePanel",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "https://digandlift.odoo.com/*"
+  ]
 }

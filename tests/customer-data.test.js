@@ -1,9 +1,9 @@
-// Run with: node lib/customer-data.test.js
+// Run with: node tests/customer-data.test.js
 const assert = require('assert');
 const {
   shapeCustomerCard, sortOrders, buyingPattern, shapeTopProducts,
   buildOrdersSpreadsheetText, buildCustomerSummaryText
-} = require('./customer-data.js');
+} = require('../lib/customer-data.js');
 
 function daysAgo(n) {
   const d = new Date();

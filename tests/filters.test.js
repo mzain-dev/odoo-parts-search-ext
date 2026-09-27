@@ -1,6 +1,6 @@
-// Run with: node lib/filters.test.js
+// Run with: node tests/filters.test.js
 const assert = require("assert");
-const { filterCustomers, parseCustomerSearchText } = require("./filters.js");
+const { filterCustomers, parseCustomerSearchText } = require("../lib/filters.js");
 
 function daysAgo(n) {
   const d = new Date();

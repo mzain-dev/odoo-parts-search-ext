@@ -1,4 +1,4 @@
-// Run with: node lib/part-data.test.js
+// Run with: node tests/part-data.test.js
 const assert = require('assert');
 const {
   shapeStockByLocation, computeStockValue, shapeIncomingStock, shapeReservedTransfers,
@@ -6,7 +6,7 @@ const {
   shapeSalesHistory, sortSalesTransactions, groupSalesByMonth, fulfillmentStatus, attachFulfillment,
   marginPerSale, topCustomersForPart, priceDrift, soldBeforeLateLandedCost,
   buildStockSummaryText, buildCostSummaryText, buildSalesSummaryText
-} = require('./part-data.js');
+} = require('../lib/part-data.js');
 
 function daysAgo(n) {
   const d = new Date();

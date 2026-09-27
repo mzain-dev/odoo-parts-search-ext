@@ -1,10 +1,10 @@
-// Run with: node lib/landed-audit.test.js
+// Run with: node tests/landed-audit.test.js
 const assert = require('assert');
 const {
   sinceDateForRange, auditLandedCosts, buildAuditSpreadsheetText,
   findIncompleteReceipts, summarizeUnappliedBills, shapeNegativeStockSales,
   replayFifo, replayMatchesOdoo, affectedSales
-} = require('./landed-audit.js');
+} = require('../lib/landed-audit.js');
 
 // sinceDateForRange
 {

@@ -293,9 +293,12 @@ async function getLandedCostsForOrders(productId, orderIds) {
     const pickingIds = [...new Set(orders.flatMap((o) => o.picking_ids || []))];
     if (!pickingIds.length) return {};
 
+    // Posted ('done') only - a draft landed cost has no valuation layers yet
+    // simply because it hasn't been validated, and would otherwise be
+    // misreported below as "untouched / went to COGS".
     const landedCosts = await searchRead(
       'stock.landed.cost',
-      [['picking_ids', 'in', pickingIds]],
+      [['picking_ids', 'in', pickingIds], ['state', '=', 'done']],
       ['id', 'name', 'picking_ids', 'date']
     );
     if (!landedCosts.length) return {};
@@ -516,6 +519,224 @@ async function getCustomerTopProducts(partnerId) {
   );
 }
 
+// ---------------- Landed cost audit (all parts) ----------------
+
+// "All time" can mean thousands of receipts/moves - split big id lists so no
+// single RPC carries an enormous 'in' domain.
+async function searchReadIn(model, field, ids, extraDomain, fields) {
+  const CHUNK = 500;
+  const out = [];
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const recs = await searchRead(model, [[field, 'in', chunk], ...(extraDomain || [])], fields);
+    out.push(...recs);
+  }
+  return out;
+}
+
+function relId(value) {
+  return Array.isArray(value) ? value[0] : null;
+}
+
+function relName(value) {
+  return Array.isArray(value) ? value[1] : null;
+}
+
+// purchase.order id -> { name, vendor, purchaseType } using the same
+// Local/Foreign rule as the Cost tab (vendor country, falling back to currency).
+async function getOrderClassification(orderIds) {
+  if (!orderIds.length) return {};
+  const orders = await searchReadIn('purchase.order', 'id', orderIds, [], ['id', 'name', 'partner_id', 'currency_id']);
+  let vendorCountryMap = {};
+  try {
+    vendorCountryMap = await getVendorCountryMap([...new Set(orders.map((o) => relId(o.partner_id)).filter((id) => id !== null))]);
+  } catch (err) {
+    vendorCountryMap = {};
+  }
+  const map = {};
+  for (const o of orders) {
+    const vendorId = relId(o.partner_id);
+    map[o.id] = {
+      name: o.name,
+      vendor: relName(o.partner_id),
+      purchaseType: classifyPurchaseType(vendorId !== null ? vendorCountryMap[vendorId] : null, relName(o.currency_id))
+    };
+  }
+  return map;
+}
+
+// Company-wide, read-only. Returns the raw material for lib/landed-audit.js:
+//
+// receiptLines - one per (receipt, product) for FOREIGN-purchase receipts
+//   validated since `sinceDate` that have no POSTED landed cost. Received and
+//   remaining qty come from the receipt's own stock.valuation.layer (the same
+//   per-receipt "remaining quantity" Odoo uses to split a landed cost), not
+//   from total on-hand stock.
+//
+// divertedLines - one per (posted landed cost, receipt move) for landed costs
+//   dated since `sinceDate` on foreign receipts: the share Odoo allocated
+//   (stock.valuation.adjustment.lines) vs. the value that actually reached a
+//   valuation layer. The difference is what went straight to COGS.
+//
+// Limitation: a receipt counts as covered once ANY landed cost is posted on
+// it - this can't tell that a second expected charge (e.g. transport after
+// customs) is still missing.
+async function getLandedCostAudit(sinceDate) {
+  const since = sinceDate ? `${sinceDate} 00:00:00` : null;
+
+  // ---- Part 1: receipts with no posted landed cost ----
+  const pickingDomain = [
+    ['picking_type_id.code', '=', 'incoming'],
+    ['state', '=', 'done'],
+    ['purchase_id', '!=', false]
+  ];
+  if (since) pickingDomain.push(['date_done', '>=', since]);
+  const pickings = await searchRead('stock.picking', pickingDomain, ['id', 'name', 'date_done', 'purchase_id']);
+
+  // ---- Part 2 input: posted landed costs in the period ----
+  const costDomain = [['state', '=', 'done']];
+  if (since) costDomain.push(['date', '>=', sinceDate]);
+  const postedCosts = await searchRead('stock.landed.cost', costDomain, ['id', 'name', 'date', 'picking_ids']);
+  const costIds = postedCosts.map((c) => c.id);
+
+  const adjustmentLines = costIds.length
+    ? await searchReadIn('stock.valuation.adjustment.lines', 'cost_id', costIds, [],
+      ['cost_id', 'product_id', 'move_id', 'additional_landed_cost'])
+    : [];
+  const adjMoveIds = [...new Set(adjustmentLines.map((a) => relId(a.move_id)).filter((id) => id !== null))];
+  const adjMoves = adjMoveIds.length
+    ? await searchReadIn('stock.move', 'id', adjMoveIds, [], ['id', 'picking_id'])
+    : [];
+  const adjPickingIds = [...new Set(adjMoves.map((m) => relId(m.picking_id)).filter((id) => id !== null))];
+  const adjPickings = adjPickingIds.length
+    ? await searchReadIn('stock.picking', 'id', adjPickingIds, [], ['id', 'name', 'purchase_id'])
+    : [];
+
+  // One classification pass covers both parts.
+  const orderIds = [...new Set([...pickings, ...adjPickings].map((p) => relId(p.purchase_id)).filter((id) => id !== null))];
+  const orderInfo = await getOrderClassification(orderIds);
+  const isForeign = (picking) => {
+    const info = orderInfo[relId(picking.purchase_id)];
+    return !!info && info.purchaseType === 'Foreign';
+  };
+
+  // ---- Part 1 continued ----
+  const foreignPickings = pickings.filter(isForeign);
+  const foreignPickingIds = foreignPickings.map((p) => p.id);
+
+  const costsOnForeign = foreignPickingIds.length
+    ? await searchReadIn('stock.landed.cost', 'picking_ids', foreignPickingIds, [['state', 'in', ['draft', 'done']]],
+      ['id', 'name', 'state', 'picking_ids'])
+    : [];
+  const postedPickingIds = new Set();
+  const draftNamesByPicking = {};
+  for (const c of costsOnForeign) {
+    for (const pid of (c.picking_ids || [])) {
+      if (c.state === 'done') postedPickingIds.add(pid);
+      else (draftNamesByPicking[pid] = draftNamesByPicking[pid] || []).push(c.name);
+    }
+  }
+
+  const missingPickings = foreignPickings.filter((p) => !postedPickingIds.has(p.id));
+  const missingById = {};
+  for (const p of missingPickings) missingById[p.id] = p;
+
+  const receiptMoves = missingPickings.length
+    ? await searchReadIn('stock.move', 'picking_id', missingPickings.map((p) => p.id), [['state', '=', 'done']],
+      ['id', 'picking_id', 'product_id'])
+    : [];
+  const receiptMoveById = {};
+  for (const m of receiptMoves) receiptMoveById[m.id] = m;
+
+  // quantity > 0 keeps only the receipt's own layer - landed cost and
+  // negative-stock correction layers on the same move have quantity 0.
+  const receiptLayers = receiptMoves.length
+    ? await searchReadIn('stock.valuation.layer', 'stock_move_id', receiptMoves.map((m) => m.id), [['quantity', '>', 0]],
+      ['stock_move_id', 'quantity', 'remaining_qty', 'value'])
+    : [];
+
+  const receiptLineByKey = {};
+  for (const layer of receiptLayers) {
+    const move = receiptMoveById[relId(layer.stock_move_id)];
+    if (!move) continue;
+    const pickingId = relId(move.picking_id);
+    const picking = missingById[pickingId];
+    if (!picking) continue;
+    const productId = relId(move.product_id);
+    const key = `${pickingId}:${productId}`;
+    if (!receiptLineByKey[key]) {
+      const info = orderInfo[relId(picking.purchase_id)] || {};
+      receiptLineByKey[key] = {
+        pickingId,
+        pickingName: picking.name,
+        dateDone: picking.date_done,
+        poName: info.name || relName(picking.purchase_id),
+        vendor: info.vendor || null,
+        productId,
+        product: relName(move.product_id),
+        receivedQty: 0,
+        remainingQty: 0,
+        receivedValue: 0,
+        draftLandedCosts: draftNamesByPicking[pickingId] || []
+      };
+    }
+    const row = receiptLineByKey[key];
+    row.receivedQty += layer.quantity || 0;
+    row.remainingQty += layer.remaining_qty || 0;
+    row.receivedValue += layer.value || 0;
+  }
+
+  // ---- Part 2 continued: allocated vs. reached-stock per (cost, move) ----
+  const costLayers = costIds.length
+    ? await searchReadIn('stock.valuation.layer', 'stock_landed_cost_id', costIds, [],
+      ['stock_landed_cost_id', 'stock_move_id', 'value'])
+    : [];
+  const intoStockByKey = {};
+  for (const l of costLayers) {
+    const key = `${relId(l.stock_landed_cost_id)}:${relId(l.stock_move_id)}`;
+    intoStockByKey[key] = (intoStockByKey[key] || 0) + (l.value || 0);
+  }
+
+  const costById = {};
+  for (const c of postedCosts) costById[c.id] = c;
+  const adjMoveById = {};
+  for (const m of adjMoves) adjMoveById[m.id] = m;
+  const adjPickingById = {};
+  for (const p of adjPickings) adjPickingById[p.id] = p;
+
+  const divertedByKey = {};
+  for (const a of adjustmentLines) {
+    const costId = relId(a.cost_id);
+    const moveId = relId(a.move_id);
+    const move = adjMoveById[moveId];
+    const picking = move ? adjPickingById[relId(move.picking_id)] : null;
+    if (!picking || !isForeign(picking)) continue;
+    const key = `${costId}:${moveId}`;
+    if (!divertedByKey[key]) {
+      const cost = costById[costId] || {};
+      const info = orderInfo[relId(picking.purchase_id)] || {};
+      divertedByKey[key] = {
+        costId,
+        costName: cost.name || relName(a.cost_id),
+        costDate: cost.date || null,
+        pickingName: picking.name,
+        poName: info.name || relName(picking.purchase_id),
+        vendor: info.vendor || null,
+        productId: relId(a.product_id),
+        product: relName(a.product_id),
+        allocated: 0,
+        intoStock: intoStockByKey[key] || 0
+      };
+    }
+    divertedByKey[key].allocated += a.additional_landed_cost || 0;
+  }
+
+  return {
+    receiptLines: Object.values(receiptLineByKey),
+    divertedLines: Object.values(divertedByKey)
+  };
+}
+
 // ---------------- Message routing ----------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -530,7 +751,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     GET_DELIVERY_INVOICE_DETAILS: () => getDeliveryInvoiceDetails(msg.lineIds),
     SEARCH_CUSTOMERS: () => searchCustomers(msg.name),
     GET_ORDERS_FOR_PARTNERS: () => getOrdersForPartners(msg.partnerIds),
-    GET_CUSTOMER_TOP_PRODUCTS: () => getCustomerTopProducts(msg.partnerId)
+    GET_CUSTOMER_TOP_PRODUCTS: () => getCustomerTopProducts(msg.partnerId),
+    GET_LANDED_COST_AUDIT: () => getLandedCostAudit(msg.sinceDate)
   };
 
   const handler = handlers[msg && msg.type];

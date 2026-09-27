@@ -7,6 +7,7 @@
   const { shapeCustomerCard, sortOrders, buyingPattern, shapeTopProducts,
     buildOrdersSpreadsheetText, buildCustomerSummaryText } = window.CustomerData;
   const { filterCustomers, parseCustomerSearchText } = window.Filters;
+  const { sinceDateForRange, auditLandedCosts, buildAuditSpreadsheetText } = window.LandedAudit;
 
   const $ = (id) => document.getElementById(id);
 
@@ -17,7 +18,8 @@
     notOdoo: $('not-odoo-screen'),
     error: $('error-screen'),
     part: $('part-mode'),
-    customer: $('customer-mode')
+    customer: $('customer-mode'),
+    landed: $('landed-mode')
   };
   const errorTextEl = $('error-text');
   const errorBackBtn = $('error-back-btn');
@@ -82,7 +84,19 @@
   const topProductsLoadingEl = $('top-products-loading');
   const customerTopProductsEl = $('customer-top-products');
 
+  // ---- Landed Cost mode elements ----
+  const landedRangeButtons = Array.from(document.querySelectorAll('.range-btn'));
+  const landedRefreshBtn = $('landed-refresh-btn');
+  const landedCopyBtn = $('landed-copy-btn');
+  const landedLoadingEl = $('landed-loading');
+  const landedResultsEl = $('landed-results');
+  const landedTotalsEl = $('landed-totals');
+  const landedFixNowEl = $('landed-fix-now');
+  const landedAlreadySoldEl = $('landed-already-sold');
+  const landedWentToCogsEl = $('landed-went-to-cogs');
+
   let odooTabId = null;
+  let odooOrigin = null; // e.g. https://digandlift.odoo.com - for "open in Odoo" links
   let activeType = 'part';
   let activeQuickFilters = new Set();
   let currentScreenKey = null; // null until showScreen() runs for the first time
@@ -1189,6 +1203,129 @@
     customerSearchAreaEl.style.display = 'block';
   });
 
+  // ================= LANDED COST MODE =================
+
+  let landedRange = '30';
+  let landedAuditState = null;
+  let landedLoaded = false;
+  let landedRequestSeq = 0; // ignore a slow older response if the range changed meanwhile
+
+  function openInOdoo(model, id) {
+    if (!odooOrigin || !id) return;
+    chrome.tabs.create({ url: `${odooOrigin}/web#id=${id}&model=${model}&view_type=form` });
+  }
+
+  function clickableRow(opts, model, id) {
+    const row = buildLineRow(opts);
+    if (odooOrigin && id) {
+      row.classList.add('clickable-row');
+      row.title = 'Open in Odoo';
+      row.addEventListener('click', () => openInOdoo(model, id));
+    }
+    return row;
+  }
+
+  function draftNote(r) {
+    return r.draftLandedCosts.length
+      ? { text: `Draft landed cost not posted yet: ${r.draftLandedCosts.join(', ')}`, tone: 'info' }
+      : null;
+  }
+
+  function fixNowRowNode(r) {
+    return clickableRow({
+      title: r.product || 'Unknown part',
+      subLines: [
+        `${r.pickingName} · ${r.poName || '—'} · ${formatDate(r.dateDone)}`,
+        r.vendor || 'Unknown vendor',
+        r.soldQty > 0 ? { text: `${num(r.soldQty)} of ${num(r.receivedQty)} already sold`, tone: 'warning' } : null,
+        draftNote(r)
+      ],
+      value: `${num(r.remainingQty)} in stock`,
+      subValue: `of ${num(r.receivedQty)} received`
+    }, 'stock.picking', r.pickingId);
+  }
+
+  function alreadySoldRowNode(r) {
+    return clickableRow({
+      title: r.product || 'Unknown part',
+      subLines: [
+        `${r.pickingName} · ${r.poName || '—'} · ${formatDate(r.dateDone)}`,
+        r.vendor || 'Unknown vendor',
+        draftNote(r)
+      ],
+      value: `${num(r.receivedQty)} sold`
+    }, 'stock.picking', r.pickingId);
+  }
+
+  function wentToCogsRowNode(r) {
+    return clickableRow({
+      title: r.product || 'Unknown part',
+      subLines: [
+        `${r.costName} · ${formatDate(r.costDate)} · ${r.pickingName}`,
+        `${r.poName || '—'} · ${r.vendor || 'Unknown vendor'}`,
+        r.fullyDiverted
+          ? { text: 'All of it went to COGS', tone: 'danger' }
+          : { text: `Partly: ${num(r.intoStock)} reached stock, ${num(r.divertedValue)} went to COGS`, tone: 'warning' }
+      ],
+      value: `${num(r.divertedValue)} OMR`,
+      subValue: 'to COGS'
+    }, 'stock.landed.cost', r.costId);
+  }
+
+  function renderLandedList(container, items, rowFn, emptyText) {
+    if (!items.length) { emptyNote(container, emptyText); return; }
+    renderExpandableList(container, items, rowFn, 15);
+  }
+
+  function renderLandedAudit(audit) {
+    const t = audit.totals;
+    buildStatGrid(landedTotalsEl, [
+      { label: 'Fix now', value: String(t.fixNowLines), sub: `${t.fixNowReceipts} receipt${t.fixNowReceipts === 1 ? '' : 's'}`, highlight: true },
+      { label: 'Already sold', value: String(t.alreadySoldLines), sub: `${t.alreadySoldReceipts} receipt${t.alreadySoldReceipts === 1 ? '' : 's'}` },
+      { label: 'Went to COGS', value: num(t.wentToCogsValue), sub: `OMR · ${t.wentToCogsLines} line${t.wentToCogsLines === 1 ? '' : 's'}`, small: true }
+    ]);
+    renderLandedList(landedFixNowEl, audit.fixNow, fixNowRowNode, 'Nothing to fix - every foreign receipt with stock has a landed cost.');
+    renderLandedList(landedAlreadySoldEl, audit.alreadySold, alreadySoldRowNode, 'None in this period.');
+    renderLandedList(landedWentToCogsEl, audit.wentToCogs, wentToCogsRowNode, 'None in this period.');
+  }
+
+  async function loadLandedAudit() {
+    const seq = ++landedRequestSeq;
+    landedLoaded = true;
+    landedResultsEl.style.display = 'none';
+    landedLoadingEl.style.display = 'block';
+    landedCopyBtn.disabled = true;
+    landedRefreshBtn.disabled = true;
+
+    const res = await sendToOdoo('GET_LANDED_COST_AUDIT', { sinceDate: sinceDateForRange(landedRange) });
+    if (seq !== landedRequestSeq) return;
+
+    landedLoadingEl.style.display = 'none';
+    landedRefreshBtn.disabled = false;
+    if (!res.ok) { landedLoaded = false; showFatalError(res.error); return; }
+
+    landedAuditState = auditLandedCosts(res.data);
+    renderLandedAudit(landedAuditState);
+    landedResultsEl.style.display = 'block';
+    landedCopyBtn.disabled = false;
+  }
+
+  landedRangeButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.range === landedRange && landedLoaded) return;
+      landedRange = btn.dataset.range;
+      landedRangeButtons.forEach((b) => b.classList.toggle('active', b === btn));
+      loadLandedAudit();
+    });
+  });
+
+  landedRefreshBtn.addEventListener('click', () => loadLandedAudit());
+
+  landedCopyBtn.addEventListener('click', () => {
+    if (!landedAuditState) return;
+    copyToClipboard(buildAuditSpreadsheetText(landedAuditState), landedCopyBtn);
+  });
+
   // ================= Type toggle & init =================
 
   typeButtons.forEach((btn) => {
@@ -1197,6 +1334,7 @@
       activeType = btn.dataset.type;
       typeButtons.forEach((b) => b.classList.toggle('active', b === btn));
       showScreen(activeType);
+      if (activeType === 'landed' && !landedLoaded) loadLandedAudit();
     });
   });
 
@@ -1229,8 +1367,12 @@
       const wasDisconnected = currentScreenKey === null || currentScreenKey === 'notOdoo' || currentScreenKey === 'error';
 
       odooTabId = tab.id;
+      try { odooOrigin = tab.url ? new URL(tab.url).origin : null; } catch (err) { odooOrigin = null; }
       searchTypeToggleEl.style.display = 'flex';
-      if (wasDisconnected) showScreen(activeType);
+      if (wasDisconnected) {
+        showScreen(activeType);
+        if (activeType === 'landed' && !landedLoaded) loadLandedAudit();
+      }
     });
   }
 

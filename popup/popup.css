@@ -844,3 +844,39 @@ h4:first-of-type {
   background: var(--danger-bg);
   color: var(--danger);
 }
+
+/* ---- Landed Cost mode ---- */
+
+.landed-intro {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+
+.copy-bar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+h4.landed-heading {
+  margin-top: 16px;
+  margin-bottom: 2px;
+}
+
+h4.landed-heading.tone-warning {
+  color: var(--warning);
+}
+
+h4.landed-heading.tone-danger {
+  color: var(--danger);
+}
+
+h4.landed-heading.tone-muted {
+  color: var(--muted);
+}
+
+.landed-hint {
+  font-size: 10.5px;
+  color: var(--faint);
+  margin: 0 0 6px;
+}

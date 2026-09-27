@@ -19,6 +19,7 @@
     <div class="toggle-bar search-type-toggle">
       <button data-type="part" class="type-btn active">Part</button>
       <button data-type="customer" class="type-btn">Customer</button>
+      <button data-type="landed" class="type-btn">Landed Cost</button>
     </div>
 
     <div id="not-odoo-screen" style="display:none">
@@ -174,11 +175,46 @@
       </div>
     </div>
 
+    <!-- ================= LANDED COST MODE ================= -->
+    <div id="landed-mode" style="display:none">
+      <p class="landed-intro">Foreign purchases only. Receipts with no posted landed cost, and landed costs posted too late.</p>
+
+      <div class="toggle-bar quick-filter-bar" id="landed-range-bar">
+        <button data-range="30" class="quick-btn range-btn active">30 days</button>
+        <button data-range="60" class="quick-btn range-btn">60 days</button>
+        <button data-range="all" class="quick-btn range-btn">All time</button>
+      </div>
+
+      <div class="toggle-bar copy-bar">
+        <button id="landed-refresh-btn">Refresh</button>
+        <button id="landed-copy-btn" disabled>Copy list (Excel)</button>
+      </div>
+
+      <p class="empty-message" id="landed-loading" style="display:none">Checking receipts and landed costs...</p>
+
+      <div id="landed-results" style="display:none">
+        <div id="landed-totals" class="stat-grid"></div>
+
+        <h4 class="landed-heading tone-warning">Missing landed cost - still in stock</h4>
+        <p class="landed-hint">Post the landed cost now - it will still reach the product cost for the units in stock.</p>
+        <div id="landed-fix-now"></div>
+
+        <h4 class="landed-heading tone-danger">Missing landed cost - already sold</h4>
+        <p class="landed-hint">Too late for the product cost. When the bill comes, it will go to COGS.</p>
+        <div id="landed-already-sold"></div>
+
+        <h4 class="landed-heading tone-muted">Posted late - went to COGS</h4>
+        <p class="landed-hint">Landed cost posted after the parts were sold. Sale margin shows higher than it really was.</p>
+        <div id="landed-went-to-cogs"></div>
+      </div>
+    </div>
+
   </div>
 
   <script src="../lib/part-data.js"></script>
   <script src="../lib/customer-data.js"></script>
   <script src="../lib/filters.js"></script>
+  <script src="../lib/landed-audit.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

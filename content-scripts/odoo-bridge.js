@@ -42,21 +42,6 @@ function searchRead(model, domain, fields, kwargs) {
   return callKw(model, 'search_read', [domain, fields], kwargs);
 }
 
-// Groups a list of records that carry a many2one [id, label] field into a
-// map of id -> array of records, for a client-side join against a second
-// query's results (e.g. purchase.order.line rows joined to their purchase.order).
-function groupByRelationId(records, relationField) {
-  const map = {};
-  for (const r of records) {
-    const rel = r[relationField];
-    const id = Array.isArray(rel) ? rel[0] : null;
-    if (id === null) continue;
-    if (!map[id]) map[id] = [];
-    map[id].push(r);
-  }
-  return map;
-}
-
 function uniqueRelationIds(records, relationField) {
   return [...new Set(
     records

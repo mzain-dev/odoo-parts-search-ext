@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Stock-outs · Parts Insight</title>
+  <link rel="icon" href="../icons/icon32.png" />
+  <link rel="stylesheet" href="../styles/tokens.css" />
+  <link rel="stylesheet" href="stockouts.css" />
+</head>
+<body>
+  <header class="page-header">
+    <div class="brand">
+      <img src="../icons/icon48.png" alt="" />
+      <div>
+        <h1>Negative stock &amp; sold-out parts</h1>
+        <p class="subtitle">Parts sold when stock was already zero or negative, day by day. Read-only, live from Odoo.</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span id="connection" class="connection">Connecting…</span>
+      <button id="refresh-btn" class="btn">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ---------- Filters ---------- -->
+    <section class="card filters" aria-label="Filters">
+      <div class="filter-row">
+        <div class="segmented" id="period-bar" role="group" aria-label="Period">
+          <button data-preset="today">Today</button>
+          <button data-preset="yesterday">Yesterday</button>
+          <button data-preset="last7">Last 7 days</button>
+          <button data-preset="last30" class="active">Last 30 days</button>
+          <button data-preset="date">Specific date</button>
+          <button data-preset="range">Custom range</button>
+        </div>
+        <div class="date-inputs" id="date-single" hidden>
+          <label>Date <input type="date" id="date-single-input" /></label>
+        </div>
+        <div class="date-inputs" id="date-range" hidden>
+          <label>From <input type="date" id="date-from-input" /></label>
+          <label>To <input type="date" id="date-to-input" /></label>
+          <button id="date-apply-btn" class="btn btn-small">Apply</button>
+        </div>
+        <span id="period-label" class="period-label"></span>
+      </div>
+
+      <div class="filter-row">
+        <label class="field">
+          <span>Warehouse</span>
+          <select id="warehouse-select"><option value="">All warehouses (combined)</option></select>
+        </label>
+        <label class="field grow">
+          <span>Search</span>
+          <input type="search" id="search-input" placeholder="Part number or name…" />
+        </label>
+        <label class="field">
+          <span>Went negative at least</span>
+          <select id="min-times-select">
+            <option value="0">Any</option>
+            <option value="1">1 time</option>
+            <option value="2">2 times</option>
+            <option value="3">3 times</option>
+            <option value="5">5 times</option>
+          </select>
+        </label>
+        <div class="chips" role="group" aria-label="Quick filters">
+          <label class="chip"><input type="checkbox" id="only-repeated" /> Repeated only</label>
+          <label class="chip"><input type="checkbox" id="only-negative-now" /> Negative now</label>
+          <label class="chip"><input type="checkbox" id="only-replenish" /> Needs replenishment</label>
+        </div>
+      </div>
+    </section>
+
+    <p id="loading" class="state-msg" hidden>Reading stock moves from Odoo…</p>
+    <p id="error" class="state-msg error" hidden></p>
+
+    <div id="content" hidden>
+      <!-- ---------- KPIs ---------- -->
+      <section class="kpis" id="kpis" aria-label="Summary"></section>
+
+      <!-- ---------- Parts ---------- -->
+      <section class="card">
+        <div class="section-head">
+          <div>
+            <h2>Parts that ran out</h2>
+            <p class="hint">Ranked by how often each part went negative. Click a column to sort, click a part to see its day-by-day stock.</p>
+          </div>
+          <div class="actions">
+            <button class="btn" id="export-parts-btn">Export CSV</button>
+            <button class="btn" id="copy-parts-btn">Copy for Excel</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="parts-table" class="data-table"></table>
+        </div>
+        <div class="table-foot" id="parts-foot"></div>
+      </section>
+
+      <!-- ---------- Selected part ---------- -->
+      <section class="card" id="part-detail" hidden>
+        <div class="section-head">
+          <div>
+            <h2 id="part-detail-title"></h2>
+            <p class="hint" id="part-detail-sub"></p>
+          </div>
+          <button class="btn" id="part-detail-close">Close</button>
+        </div>
+        <figure class="chart">
+          <figcaption>Closing on-hand quantity per day</figcaption>
+          <div class="chart-wrap" id="part-chart"></div>
+          <div class="chart-tooltip" id="chart-tooltip" hidden></div>
+        </figure>
+      </section>
+
+      <!-- ---------- Day-wise ---------- -->
+      <section class="card">
+        <div class="section-head">
+          <div>
+            <h2>Day-wise on-hand</h2>
+            <p class="hint" id="days-hint">Opening and closing quantity each day, what was sold, and how much was sold without stock.</p>
+          </div>
+          <div class="actions">
+            <div class="segmented small" id="days-mode" role="group" aria-label="Days shown">
+              <button data-mode="problem" class="active">Problem days</button>
+              <button data-mode="all">All days</button>
+            </div>
+            <button class="btn" id="export-days-btn">Export CSV</button>
+            <button class="btn" id="copy-days-btn">Copy for Excel</button>
+          </div>
+        </div>
+        <div id="days-filter-chip" class="filter-chip" hidden></div>
+        <div class="table-wrap">
+          <table id="days-table" class="data-table"></table>
+        </div>
+        <div class="table-foot" id="days-foot"></div>
+      </section>
+
+      <p class="footnote">
+        How this is worked out: Odoo doesn't keep stock levels per day, so each day is rebuilt from today's on-hand quantity by
+        walking back through every completed stock move. <b>Sold without stock</b> counts the units of each sale that were
+        more than what was on hand at that moment. Days follow your computer's time zone.
+      </p>
+    </div>
+  </main>
+
+  <script src="../lib/stockout-analysis.js"></script>
+  <script src="stockouts.js"></script>
+</body>
+</html>

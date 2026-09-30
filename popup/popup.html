@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <title>Parts Insight for Odoo</title>
+  <link rel="stylesheet" href="../styles/tokens.css" />
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
@@ -20,6 +21,7 @@
       <button data-type="part" class="type-btn active">Part</button>
       <button data-type="customer" class="type-btn">Customer</button>
       <button data-type="landed" class="type-btn">Landed Cost</button>
+      <button data-type="stockouts" class="type-btn">Stock-outs</button>
     </div>
 
     <div id="not-odoo-screen" style="display:none">
@@ -241,16 +243,42 @@
       </div>
     </div>
 
+    <!-- ================= STOCK-OUTS MODE ================= -->
+    <div id="stockouts-mode" style="display:none">
+      <p class="landed-intro">Parts sold when stock was already zero or negative. The full report has day-by-day on-hand, filters and export.</p>
+
+      <div class="toggle-bar quick-filter-bar" id="stockouts-range-bar">
+        <button data-preset="last7" class="quick-btn">Last 7 days</button>
+        <button data-preset="last30" class="quick-btn active">Last 30 days</button>
+      </div>
+
+      <div class="toggle-bar copy-bar">
+        <button id="stockouts-open-report-btn">Open full report</button>
+        <button id="stockouts-refresh-btn">Refresh</button>
+      </div>
+
+      <p class="empty-message" id="stockouts-loading" style="display:none">Reading stock moves...</p>
+
+      <div id="stockouts-results" style="display:none">
+        <div id="stockouts-totals" class="stat-grid"></div>
+        <h4 class="landed-heading tone-danger">Most frequent stock-outs</h4>
+        <p class="landed-hint">All warehouses combined. Tap a part to open its day-by-day history.</p>
+        <div id="stockouts-top"></div>
+      </div>
+    </div>
+
   </div>
 
   <script src="../lib/part-data.js"></script>
   <script src="../lib/customer-data.js"></script>
   <script src="../lib/filters.js"></script>
   <script src="../lib/landed-audit.js"></script>
+  <script src="../lib/stockout-analysis.js"></script>
   <script src="core.js"></script>
   <script src="modes/part-mode.js"></script>
   <script src="modes/customer-mode.js"></script>
   <script src="modes/landed-mode.js"></script>
+  <script src="modes/stockouts-mode.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

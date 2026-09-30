@@ -963,6 +963,86 @@ async function getProductLayers(productId) {
   }));
 }
 
+// ---------------- Stock-outs (negative / sold-out stock) ----------------
+
+// Big result sets (a month of stock moves) are read in pages so no single
+// request is enormous.
+async function searchReadPaged(model, domain, fields, order, pageSize = 5000, context) {
+  const out = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const kwargs = { limit: pageSize, offset, order };
+    if (context) kwargs.context = context;
+    const page = await searchRead(model, domain, fields, kwargs);
+    out.push(...page);
+    if (page.length < pageSize) return out;
+  }
+}
+
+// Raw material for lib/stockout-analysis.js. sinceUtc is the UTC datetime of
+// local midnight on the first day of the report: every done move of a
+// storable product from then until now is needed, because the day-by-day
+// balance is rebuilt backwards from today's on-hand.
+//
+// Locations/products are read including archived ones (active_test false) -
+// old moves can point at a location or part that has since been archived.
+async function getStockoutData(sinceUtc) {
+  const withArchived = { active_test: false };
+
+  const [locations, warehouses] = await Promise.all([
+    searchRead('stock.location', [], ['id', 'usage', 'warehouse_id'], { context: withArchived }),
+    searchRead('stock.warehouse', [], ['id', 'name', 'code'])
+  ]);
+
+  const moves = await searchReadPaged('stock.move',
+    [['state', '=', 'done'], ['date', '>=', sinceUtc], ['product_id.type', '=', 'product']],
+    ['id', 'product_id', 'product_qty', 'date', 'location_id', 'location_dest_id', 'reference'],
+    'date asc, id asc');
+
+  const movedProductIds = [...new Set(moves.map((m) => relId(m.product_id)).filter((id) => id !== null))];
+  const quantFields = ['product_id', 'location_id', 'quantity'];
+  const internal = [['location_id.usage', '=', 'internal']];
+  const [movedQuants, negativeQuants] = await Promise.all([
+    movedProductIds.length ? searchReadIn('stock.quant', 'product_id', movedProductIds, internal, quantFields) : [],
+    // parts sitting negative with no moves in the period still belong in the report
+    searchRead('stock.quant', [...internal, ['quantity', '<', 0]], quantFields)
+  ]);
+  const quantsById = {};
+  for (const q of [...movedQuants, ...negativeQuants]) quantsById[q.id] = q;
+  const quants = Object.values(quantsById);
+
+  const productIds = [...new Set([...movedProductIds, ...quants.map((q) => relId(q.product_id))].filter((id) => id !== null))];
+  const productRecs = productIds.length
+    ? await searchReadIn('product.product', 'id', productIds, [], ['id', 'default_code', 'name'])
+    : [];
+  // archived parts: searchReadIn has no context, so fetch any missing ones separately
+  const found = new Set(productRecs.map((p) => p.id));
+  const missing = productIds.filter((id) => !found.has(id));
+  if (missing.length) {
+    productRecs.push(...await searchRead('product.product', [['id', 'in', missing]], ['id', 'default_code', 'name'], { context: withArchived }));
+  }
+
+  const locationMap = {};
+  for (const l of locations) locationMap[l.id] = { usage: l.usage, warehouseId: relId(l.warehouse_id) };
+  const products = {};
+  for (const p of productRecs) products[p.id] = { code: p.default_code || '', name: p.name || '' };
+
+  return {
+    locations: locationMap,
+    warehouses: warehouses.map((w) => ({ id: w.id, name: w.name, code: w.code })),
+    moves: moves.map((m) => ({
+      id: m.id,
+      productId: relId(m.product_id),
+      qty: m.product_qty || 0,
+      date: m.date,
+      src: relId(m.location_id),
+      dest: relId(m.location_dest_id),
+      reference: m.reference || null
+    })),
+    onHand: quants.map((q) => ({ productId: relId(q.product_id), locationId: relId(q.location_id), quantity: q.quantity || 0 })),
+    products
+  };
+}
+
 // ---------------- Message routing ----------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -980,7 +1060,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     GET_CUSTOMER_TOP_PRODUCTS: () => getCustomerTopProducts(msg.partnerId),
     GET_LANDED_COST_AUDIT: () => getLandedCostAudit(msg.sinceDate),
     GET_PRODUCT_LAYERS: () => getProductLayers(msg.productId),
-    GET_MOVE_SALE_INFO: () => getMoveSaleInfo(msg.moveIds)
+    GET_MOVE_SALE_INFO: () => getMoveSaleInfo(msg.moveIds),
+    GET_STOCKOUT_DATA: () => getStockoutData(msg.sinceUtc)
   };
 
   const handler = handlers[msg && msg.type];

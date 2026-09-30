@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Parts Insight for Odoo",
   "short_name": "Parts Insight",
-  "version": "1.2.0",
-  "description": "Read-only lookup for spare parts, customers and landed cost checks, live from your Odoo session.",
+  "version": "1.3.0",
+  "description": "Read-only lookup for spare parts, customers, landed cost checks and stock-out analysis, live from your Odoo session.",
   "action": {
     "default_popup": "popup/popup.html",
     "default_icon": {

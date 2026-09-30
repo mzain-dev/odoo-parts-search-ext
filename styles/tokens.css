@@ -1,0 +1,37 @@
+/* Design tokens shared by the popup and the full-page reports. */
+
+:root {
+  --ink: #0f172a;
+  --text: #334155;
+  --muted: #64748b;
+  --faint: #94a3b8;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --surface: #ffffff;
+  --surface-alt: #f8fafc;
+  --surface-hover: #f1f5f9;
+
+  --primary: #0f766e;
+  --primary-dark: #0b5d56;
+  --primary-soft: #ecfdf9;
+  --primary-soft-border: #ccf3ec;
+
+  --success: #15803d;
+  --success-bg: #ecfdf5;
+  --info: #1d4ed8;
+  --info-bg: #eff6ff;
+  --warning: #b45309;
+  --warning-bg: #fffbeb;
+  --danger: #b91c1c;
+  --danger-bg: #fef2f2;
+  --accent: #6d28d9;
+  --accent-bg: #f5f3ff;
+
+  --radius-sm: 6px;
+  --radius-md: 9px;
+  --radius-lg: 12px;
+
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 6px 16px rgba(15, 23, 42, 0.1);
+}

@@ -5,7 +5,7 @@
 <h1 align="center">Parts Insight for Odoo</h1>
 
 <p align="center">
-  A Chrome extension for looking up spare parts, customers and landed costs, live from your Odoo 17 session.<br>
+  A Chrome extension for looking up spare parts, customers, landed costs and stock-outs, live from your Odoo 17 session.<br>
   <b>Read-only:</b> it never creates, edits or deletes anything in Odoo.
 </p>
 
@@ -13,7 +13,7 @@
 
 ## What it does
 
-The extension opens as a popup or side panel next to your Odoo tab and has three modes.
+The extension opens as a popup or side panel next to your Odoo tab and has four modes. The Stock-outs mode also opens a full-page report.
 
 ### Part
 Search by part number or name, then switch between three tabs:
@@ -44,6 +44,27 @@ A company-wide check for landed cost problems. You can look at the last **30 day
 Tap any row to see details and buttons that open the receipt, bill, landed cost or sale order in Odoo. **Copy list (Excel)** copies every list as tab-separated text.
 
 <p align="center"><img src="docs/landed-cost-posted-late.png" width="360" alt="Posted late tab with affected sales (sample data)"></p>
+
+### Stock-outs
+Shows which parts are **regularly sold when stock is already zero or negative**. The popup shows the parts that run out most often in the last 7 or 30 days. **Open full report** (or tap a part) opens a full-page report in a new tab:
+
+- **Filters:** Today, Yesterday, Last 7 days, Last 30 days, a specific date, or a custom date range. Warehouse (all combined, or one warehouse). Search by part number or name. "Went negative at least N times", *Repeated only*, *Negative now* and *Needs replenishment*.
+- **Summary tiles:** parts affected, repeated offenders, times stock went negative, units sold without stock, parts negative right now, and parts needing replenishment. Tiles marked "click to filter" apply that filter.
+- **Parts that ran out:** one row per part with part number and name, on hand now, **times it went negative**, times it sold out (a sale took it to exactly 0), days negative, longest negative run, **units sold without stock**, total sold, maximum shortage, **the dates it went negative**, and the last negative day. Parts are ranked by how often they went negative, and every column can be sorted.
+- **Click a part** to see a chart of its closing on-hand quantity per day (hover a bar for that day's details), and the day-wise table filtered to that part.
+- **Day-wise on-hand:** date, part number and name, on hand at the start of the day, received, sold, customer returns, other movements out, on hand at the end of the day, negative quantity, and units sold without stock. You can show *problem days* only or *all days*.
+- **Export:** each table can be downloaded as CSV or copied for Excel, using the current filters and sorting.
+
+**Flags:** *Repeated* means the part went negative or sold out 2+ times in the period. *Needs replenishment* means it is repeated and has nothing on hand now. *Negative now* means today's on-hand quantity is below zero.
+
+**How the numbers are worked out:** Odoo doesn't keep stock levels per day. The report starts from today's actual on-hand quantity and walks back through every completed stock move, so it knows the balance before and after each move. From that:
+- **On hand (end of day)** is exact for every day.
+- **Sold without stock** is the part of each sale that was more than the quantity on hand at that moment. For example, 4 sold with 2 on hand counts as 2.
+- **Went negative** counts each time the balance crossed from zero or above to below zero, even if it recovered the same day.
+- Moves between locations of the same warehouse don't count. With a single warehouse selected, transfers to and from other warehouses do count.
+- Days follow your computer's time zone.
+
+<p align="center"><img src="docs/stockouts-report.png" width="720" alt="Stock-outs report with one part selected (sample data)"></p>
 
 ---
 
@@ -91,6 +112,8 @@ The extension only runs on `https://digandlift.odoo.com`. For another database, 
 - **Which sales were affected** is worked out by replaying the product's stock history oldest-first, because Odoo doesn't store which sale used which receipt. When the result doesn't exactly match Odoo's own figures (for example after returns), the list is marked **Approximate**.
 - Covered negative-stock sales only show when Odoo made a cost correction for them, meaning the receipt price was different from the cost the sale used.
 - **All time** can take several seconds on a large database.
+- **Stock-outs** covers storable products only, since services and consumables have no on-hand quantity. A long custom range reads every stock move since its start date, so it can take a while on a busy database.
+- With **all warehouses combined**, a part that is negative in one warehouse but covered by another won't show. Pick a single warehouse to see it.
 
 ---
 
@@ -105,14 +128,21 @@ lib/                          Pure logic, no Odoo or DOM access, unit tested
   customer-data.js            Customer mode: cards, buying pattern, exports
   filters.js                  Customer search text parsing and filtering
   landed-audit.js             Landed Cost mode: all checks, FIFO replay, Excel export
-popup/
-  popup.html / .css / .js     The user interface (popup and side panel)
+  stockout-analysis.js        Stock-outs: day-by-day balances, events, filters, CSV
+popup/                        The popup / side panel
+  popup.html, popup.css
+  core.js                     Shared: Odoo tab connection, screens, row/list helpers
+  modes/                      One file per mode: part, customer, landed, stockouts
+  main.js                     Mode toggle, tab tracking, startup
+report/
+  stockouts.html / .css / .js Full-page Stock-outs report (opens in a new tab)
+styles/tokens.css             Colours, spacing and shadows shared by popup and report
 icons/                        Extension icons (16, 32, 48, 128 px)
 tests/                        Unit tests for lib/ (plain Node, no dependencies)
 docs/                         Images used in this README
 ```
 
-**How it fits together:** `popup.js` sends a message such as `GET_LANDED_COST_AUDIT` to `odoo-bridge.js` on the Odoo tab. The bridge queries Odoo with the user's session and returns raw records. The functions in `lib/` then shape them into what the screen shows.
+**How it fits together:** each screen (a popup mode or the report page) sends a message such as `GET_STOCKOUT_DATA` to `odoo-bridge.js` on the Odoo tab. The bridge queries Odoo with the user's session and returns raw records. The functions in `lib/` then turn them into what the screen shows. Screens contain no calculations, and `lib/` contains no Odoo or screen code.
 
 ---
 

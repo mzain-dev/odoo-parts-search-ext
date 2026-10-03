@@ -3,7 +3,7 @@
   const { $, state, sendToOdoo, showFatalError, num, formatDate, clear, emptyNote, copyToClipboard,
     buildStatGrid, buildLineRow, renderExpandableList, openInOdoo, detailNote, expandableRow } = window.PI;
   const { sinceDateForRange, auditLandedCosts, buildAuditSpreadsheetText,
-    replayFifo, replayMatchesOdoo, affectedSales } = window.LandedAudit;
+    replayFifo, replayMatchesOdoo, affectedSales, localDayStartUtc, negativeSalesOnDay } = window.LandedAudit;
 
   // ---- Landed Cost mode elements ----
   const landedRangeButtons = Array.from(document.querySelectorAll('.range-btn'));
@@ -18,6 +18,9 @@
   const landedIncompleteEl = $('landed-incomplete');
   const landedBillsEl = $('landed-bills');
   const landedNegativeEl = $('landed-negative');
+  const negDateInput = $('landed-neg-date');
+  const negDateClearBtn = $('landed-neg-date-clear');
+  const negDaySummaryEl = $('landed-neg-day-summary');
   const landedTabButtons = Array.from(document.querySelectorAll('.landed-tab-btn'));
   const landedPanels = Array.from(document.querySelectorAll('.landed-panel'));
 
@@ -26,6 +29,8 @@
   let landedAuditState = null;
   let landedLoaded = false;
   let landedRequestSeq = 0; // ignore a slow older response if the range changed meanwhile
+  let negDay = null; // Neg. stock tab: local 'YYYY-MM-DD' picked, or null for the whole period
+  let negDayRequestSeq = 0;
 
   // "Which sales used units from this receipt" - replays the product's
   // valuation history (see replayFifo) and, for a late landed cost, splits the
@@ -199,9 +204,57 @@
     if (audit.errors.bills) emptyNote(landedBillsEl, `Could not check bills: ${audit.errors.bills}`);
     else renderLandedList(landedBillsEl, audit.bills, billRowNode, 'Every landed-cost bill in this period has been applied.');
     renderLandedList(landedWentToCogsEl, audit.wentToCogs, wentToCogsRowNode, 'None in this period.');
+    if (negDay) loadNegativeDay();
+    else renderNegativeAll(audit);
+  }
+
+  function renderNegativeAll(audit) {
+    negDaySummaryEl.style.display = 'none';
     if (audit.errors.negative) emptyNote(landedNegativeEl, `Could not check negative stock: ${audit.errors.negative}`);
     else renderLandedList(landedNegativeEl, audit.negativeSales, negativeRowNode, 'No sales made with negative stock in this period.');
   }
+
+  // One day only: fetched on its own, independent of the 30/60/all range, so
+  // any date works. Covered sales are found through the correction layer Odoo
+  // creates when the stock arrives - always on or after the sale - so asking
+  // for corrections since that day's midnight catches every sale on it.
+  async function loadNegativeDay() {
+    const seq = ++negDayRequestSeq;
+    const day = negDay;
+    const offsetMinutes = -new Date(`${day}T12:00:00`).getTimezoneOffset();
+    negDaySummaryEl.style.display = 'none';
+    emptyNote(landedNegativeEl, 'Loading sales made with negative stock on this day...');
+
+    const res = await sendToOdoo('GET_NEGATIVE_STOCK_SALES', { sinceUtc: localDayStartUtc(day, offsetMinutes) });
+    if (seq !== negDayRequestSeq) return;
+    if (!res.ok) { emptyNote(landedNegativeEl, `Could not check negative stock: ${res.error}`); return; }
+
+    const { sales, totals } = negativeSalesOnDay(res.data, day, offsetMinutes);
+    negDaySummaryEl.textContent = sales.length
+      ? `${day}: ${totals.parts} part${totals.parts === 1 ? '' : 's'} sold with negative stock · ` +
+        `${totals.sales} sale${totals.sales === 1 ? '' : 's'} · ${num(totals.units)} units · ${totals.waiting} still waiting`
+      : '';
+    negDaySummaryEl.style.display = sales.length ? 'block' : 'none';
+    renderLandedList(landedNegativeEl, sales, negativeRowNode, `No part was sold with negative stock on ${day}.`);
+  }
+
+  function todayLocal() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  negDateInput.max = todayLocal();
+
+  negDateInput.addEventListener('change', () => {
+    negDay = negDateInput.value || null;
+    negDateClearBtn.disabled = !negDay;
+    if (negDay) loadNegativeDay();
+    else if (landedAuditState) { negDayRequestSeq++; renderNegativeAll(landedAuditState); }
+  });
+
+  negDateClearBtn.addEventListener('click', () => {
+    negDateInput.value = '';
+    negDateInput.dispatchEvent(new Event('change'));
+  });
 
   async function loadLandedAudit() {
     const seq = ++landedRequestSeq;

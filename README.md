@@ -39,16 +39,17 @@ A company-wide check for landed cost problems. You can look at the last **30 day
 | | Receipts that **have a landed cost but may be missing one**, for example transport posted but no LC charges | Based on the charges each vendor's shipments normally carry, learned from the last 365 days. |
 | **Bills** | Posted vendor bills with landed-cost lines that were **not applied**, or only partly | Covers all vendors, including local freight forwarders and clearing agents. |
 | **Posted late** | Landed costs whose share **went to COGS** because the parts were already sold | Tap a row to see **which sales** used those units and how much of the cost belongs to each one. |
-| **Neg. stock** | Sales **delivered before the stock was received**, either still waiting or already covered | Landed costs for these units always go to COGS, so the sale margin is overstated. |
+| **Neg. stock** | Sales **delivered before the stock was received**, either still waiting or already covered. Pick a date in **Sold on** to list only the parts sold with negative stock on that day (any date, not limited to the 30/60 day range); **Show all** goes back to the full list. | Landed costs for these units always go to COGS, so the sale margin is overstated. |
 
 Tap any row to see details and buttons that open the receipt, bill, landed cost or sale order in Odoo. **Copy list (Excel)** copies every list as tab-separated text.
 
 <p align="center"><img src="docs/landed-cost-posted-late.png" width="360" alt="Posted late tab with affected sales (sample data)"></p>
 
 ### Stock-outs
-Shows which parts are **regularly sold when stock is already zero or negative**. The popup shows the parts that run out most often in the last 7 or 30 days. **Open full report** (or tap a part) opens a full-page report in a new tab:
+Shows which parts are **regularly sold when stock is already zero or negative**. The popup shows the parts that run out most often in the last 7 or 30 days. Pick a date in **Sold on** to list only the parts **sold with negative stock on that day** (a sale bigger than what was on hand), leaving out parts that only sat negative or sold out to exactly zero; **Show all** goes back. **Open full report** (or tap a part) opens a full-page report in a new tab, on the same day and filter when a date is picked:
 
-- **Filters:** Today, Yesterday, Last 7 days, Last 30 days, a specific date, or a custom date range. Warehouse (all combined, or one warehouse). Search by part number or name. "Went negative at least N times", *Repeated only*, *Negative now* and *Needs replenishment*.
+- **Stock level:** *Per location* (default) follows each location on its own, the way Odoo deducts a sale from the shelf it was picked from. A part at +2, -3 and +5 in three locations shows the -3 location going negative, even though the part total is 4. *Part total* adds all locations of the warehouse together, as before. The popup always works per location. Every part also shows **On Hand by Location**: its stock in each location right now, most negative first.
+- **Filters:** Today, Yesterday, Last 7 days, Last 30 days, a specific date, or a custom date range. Warehouse (all combined, or one warehouse). Search by part number or name. "Went negative at least N times", *Sold with negative stock only*, *Repeated only*, *Negative now* and *Needs replenishment*.
 - **Summary tiles:** parts affected, repeated offenders, times stock went negative, units sold without stock, parts negative right now, and parts needing replenishment. Tiles marked "click to filter" apply that filter.
 - **Parts that ran out:** one row per part with part number and name, on hand now, **times it went negative**, times it sold out (a sale took it to exactly 0), days negative, longest negative run, **units sold without stock**, total sold, maximum shortage, **the dates it went negative**, and the last negative day. Parts are ranked by how often they went negative, and every column can be sorted.
 - **Click a part** to see a chart of its closing on-hand quantity per day (hover a bar for that day's details), and the day-wise table filtered to that part.
@@ -61,7 +62,8 @@ Shows which parts are **regularly sold when stock is already zero or negative**.
 - **On hand (end of day)** is exact for every day.
 - **Sold without stock** is the part of each sale that was more than the quantity on hand at that moment. For example, 4 sold with 2 on hand counts as 2.
 - **Went negative** counts each time the balance crossed from zero or above to below zero, even if it recovered the same day.
-- Moves between locations of the same warehouse don't count. With a single warehouse selected, transfers to and from other warehouses do count.
+- Stock moves are read line by line (stock move lines), so each unit is followed to the exact location it left or arrived at.
+- *Per location:* transfers between locations count as **Moved Out** of one and **Moved In** to the other. *Part total:* moves between locations of the same warehouse don't count, and with a single warehouse selected, transfers to and from other warehouses do count.
 - Days follow your computer's time zone.
 
 <p align="center"><img src="docs/stockouts-report.png" width="720" alt="Stock-outs report with one part selected (sample data)"></p>

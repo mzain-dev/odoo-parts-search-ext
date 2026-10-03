@@ -238,6 +238,12 @@
         <div class="tab-panel landed-panel" id="ltab-negative">
           <h4 class="landed-heading tone-danger">Sold with negative stock</h4>
           <p class="landed-hint">Delivered before the stock was received. Landed costs for these units always go to COGS.</p>
+          <div class="neg-day-bar">
+            <label for="landed-neg-date">Sold on</label>
+            <input type="date" id="landed-neg-date" />
+            <button id="landed-neg-date-clear" disabled>Show all</button>
+          </div>
+          <p class="landed-hint" id="landed-neg-day-summary" style="display:none"></p>
           <div id="landed-negative"></div>
         </div>
       </div>
@@ -252,6 +258,12 @@
         <button data-preset="last30" class="quick-btn active">Last 30 days</button>
       </div>
 
+      <div class="neg-day-bar">
+        <label for="stockouts-date">Sold on</label>
+        <input type="date" id="stockouts-date" />
+        <button id="stockouts-date-clear" disabled>Show all</button>
+      </div>
+
       <div class="toggle-bar copy-bar">
         <button id="stockouts-open-report-btn">Open full report</button>
         <button id="stockouts-refresh-btn">Refresh</button>
@@ -261,7 +273,7 @@
 
       <div id="stockouts-results" style="display:none">
         <div id="stockouts-totals" class="stat-grid"></div>
-        <h4 class="landed-heading tone-danger">Most frequent stock-outs</h4>
+        <h4 class="landed-heading tone-danger" id="stockouts-heading">Most frequent stock-outs</h4>
         <p class="landed-hint">All warehouses combined. Tap a part to open its day-by-day history.</p>
         <div id="stockouts-top"></div>
       </div>

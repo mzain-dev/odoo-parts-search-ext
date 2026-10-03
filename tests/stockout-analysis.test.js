@@ -145,6 +145,88 @@ const example = {
   assert.strictEqual(rows[0].negativeDays, 3);
 }
 
+// One day, "sold with negative stock only": keeps the part sold into
+// negative, drops one that sat negative with no sale and one sold out to 0.
+{
+  const data = {
+    locations: { 1: { usage: 'internal', warehouseId: 1 }, 9: { usage: 'customer', warehouseId: null } },
+    onHand: [
+      { productId: 1, locationId: 1, quantity: -2 },
+      { productId: 2, locationId: 1, quantity: -1 },
+      { productId: 3, locationId: 1, quantity: 0 }
+    ],
+    moves: [
+      { id: 1, productId: 1, qty: 3, date: '2026-09-28 10:00:00', src: 1, dest: 9 },
+      { id: 2, productId: 3, qty: 2, date: '2026-09-28 11:00:00', src: 1, dest: 9 }
+    ],
+    products: { 1: { code: 'A', name: 'Sold into negative' }, 2: { code: 'B', name: 'Sat negative' }, 3: { code: 'C', name: 'Sold out' } }
+  };
+  const summary = summarizeParts(buildDailyStock(data, { from: '2026-09-28', to: '2026-09-28' }));
+  assert.deepStrictEqual(summary.map((r) => r.productId).sort(), [1, 2, 3]);
+  const sold = filterParts(summary, { onlySoldNegative: true });
+  assert.deepStrictEqual(sold.map((r) => r.productId), [1]);
+  assert.strictEqual(sold[0].soldWithoutStock, 2);
+  assert.strictEqual(sold[0].salesWithoutStock, 1);
+}
+
+// Per location: stock 2 / -3 / 5 in three locations (total 4). The part
+// total hides it; per location shows shelf B sold into negative.
+{
+  const data = {
+    locations: {
+      1: { usage: 'internal', warehouseId: 1, name: 'WH/Stock/A' },
+      2: { usage: 'internal', warehouseId: 1, name: 'WH/Stock/B' },
+      3: { usage: 'internal', warehouseId: 1, name: 'WH/Stock/C' },
+      9: { usage: 'customer', warehouseId: null, name: 'Customers' }
+    },
+    onHand: [
+      { productId: 7, locationId: 1, quantity: 2 },
+      { productId: 7, locationId: 2, quantity: -3 },
+      { productId: 7, locationId: 3, quantity: 5 }
+    ],
+    moves: [
+      // B: 1 moved in from A, then 4 sold from B -> B goes 0 -> 1 -> -3
+      { id: 1, productId: 7, qty: 1, date: '2026-09-28 08:00:00', src: 1, dest: 2 },
+      { id: 2, productId: 7, qty: 4, date: '2026-09-28 10:00:00', src: 2, dest: 9 }
+    ],
+    products: { 7: { code: 'P7', name: 'Bearing' } }
+  };
+  const opts = { from: '2026-09-28', to: '2026-09-28' };
+
+  // Part total: 11 before the sale, 7 after - nothing wrong visible.
+  const total = summarizeParts(buildDailyStock(data, opts));
+  assert.strictEqual(total.length, 0);
+
+  const daily = buildDailyStock(data, { ...opts, byLocation: true });
+  assert.deepStrictEqual(Object.keys(daily).sort(), ['7@1', '7@2', '7@3']);
+  const b = daily['7@2'];
+  assert.strictEqual(b.location, 'WH/Stock/B');
+  assert.strictEqual(b.days[0].opening, 0);
+  assert.strictEqual(b.days[0].movedIn, 1);
+  assert.strictEqual(b.days[0].sold, 4);
+  assert.strictEqual(b.days[0].closing, -3);
+  assert.strictEqual(b.days[0].soldWithoutStock, 3);
+  assert.strictEqual(daily['7@1'].days[0].movedOut, 1);
+  assert.strictEqual(daily['7@1'].days[0].received, 0);
+
+  const rows = summarizeParts(daily);
+  assert.deepStrictEqual(rows.map((r) => r.key), ['7@2']);
+  const r = rows[0];
+  assert.strictEqual(r.location, 'WH/Stock/B');
+  assert.strictEqual(r.current, -3);
+  assert.strictEqual(r.timesNegative, 1);
+  assert.strictEqual(r.negativeNow, true);
+  assert.strictEqual(r.onHandByLocationText, 'WH/Stock/B -3 · WH/Stock/A 2 · WH/Stock/C 5');
+  assert.strictEqual(r.negativeLocationsNow, 1);
+  assert.deepStrictEqual(filterParts(rows, { search: 'stock/b' }).map((x) => x.key), ['7@2']);
+  assert.deepStrictEqual(summaryTotals(rows).parts, 1);
+
+  const dayRows = dayRowsFor(daily, rows, { onlyProblemDays: true });
+  assert.strictEqual(dayRows.length, 1);
+  assert.strictEqual(dayRows[0].location, 'WH/Stock/B');
+  assert.strictEqual(dayRows[0].key, '7@2');
+}
+
 // Filters, sorting, ranking, totals, export
 {
   const rows = [

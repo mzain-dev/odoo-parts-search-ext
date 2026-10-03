@@ -989,14 +989,25 @@ async function getStockoutData(sinceUtc) {
   const withArchived = { active_test: false };
 
   const [locations, warehouses] = await Promise.all([
-    searchRead('stock.location', [], ['id', 'usage', 'warehouse_id'], { context: withArchived }),
+    searchRead('stock.location', [], ['id', 'usage', 'warehouse_id', 'complete_name'], { context: withArchived }),
     searchRead('stock.warehouse', [], ['id', 'name', 'code'])
   ]);
 
-  const moves = await searchReadPaged('stock.move',
-    [['state', '=', 'done'], ['date', '>=', sinceUtc], ['product_id.type', '=', 'product']],
-    ['id', 'product_id', 'product_qty', 'date', 'location_id', 'location_dest_id', 'reference'],
-    'date asc, id asc');
+  // Move lines, not moves: a move says WH/Stock, its lines say which shelf
+  // (WH/Stock/Shelf 2) the units really left or reached - the same locations
+  // stock.quant is kept at, so stock can be followed per location.
+  // quantity_product_uom is in the product's unit (Odoo 17); older databases
+  // only have qty_done.
+  const lineDomain = [['state', '=', 'done'], ['date', '>=', sinceUtc], ['product_id.type', '=', 'product']];
+  const lineFields = ['id', 'product_id', 'date', 'location_id', 'location_dest_id', 'reference'];
+  let qtyField = 'quantity_product_uom';
+  let moves;
+  try {
+    moves = await searchReadPaged('stock.move.line', lineDomain, [...lineFields, qtyField], 'date asc, id asc');
+  } catch (err) {
+    qtyField = 'qty_done';
+    moves = await searchReadPaged('stock.move.line', lineDomain, [...lineFields, qtyField], 'date asc, id asc');
+  }
 
   const movedProductIds = [...new Set(moves.map((m) => relId(m.product_id)).filter((id) => id !== null))];
   const quantFields = ['product_id', 'location_id', 'quantity'];
@@ -1022,7 +1033,9 @@ async function getStockoutData(sinceUtc) {
   }
 
   const locationMap = {};
-  for (const l of locations) locationMap[l.id] = { usage: l.usage, warehouseId: relId(l.warehouse_id) };
+  for (const l of locations) {
+    locationMap[l.id] = { usage: l.usage, warehouseId: relId(l.warehouse_id), name: l.complete_name || '' };
+  }
   const products = {};
   for (const p of productRecs) products[p.id] = { code: p.default_code || '', name: p.name || '' };
 
@@ -1032,7 +1045,7 @@ async function getStockoutData(sinceUtc) {
     moves: moves.map((m) => ({
       id: m.id,
       productId: relId(m.product_id),
-      qty: m.product_qty || 0,
+      qty: m[qtyField] || 0,
       date: m.date,
       src: relId(m.location_id),
       dest: relId(m.location_dest_id),
@@ -1059,6 +1072,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     GET_ORDERS_FOR_PARTNERS: () => getOrdersForPartners(msg.partnerIds),
     GET_CUSTOMER_TOP_PRODUCTS: () => getCustomerTopProducts(msg.partnerId),
     GET_LANDED_COST_AUDIT: () => getLandedCostAudit(msg.sinceDate),
+    GET_NEGATIVE_STOCK_SALES: () => getNegativeStockRows(msg.sinceUtc || null),
     GET_PRODUCT_LAYERS: () => getProductLayers(msg.productId),
     GET_MOVE_SALE_INFO: () => getMoveSaleInfo(msg.moveIds),
     GET_STOCKOUT_DATA: () => getStockoutData(msg.sinceUtc)

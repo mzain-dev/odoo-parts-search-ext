@@ -51,6 +51,13 @@
           <span>Warehouse</span>
           <select id="warehouse-select"><option value="">All warehouses (combined)</option></select>
         </label>
+        <div class="field">
+          <span>Stock level</span>
+          <div class="segmented" id="level-bar" role="group" aria-label="Stock level">
+            <button data-level="location" class="active" title="Each location on its own, the way Odoo deducts a sale">Per location</button>
+            <button data-level="total" title="All locations of the warehouse added together">Part total</button>
+          </div>
+        </div>
         <label class="field grow">
           <span>Search</span>
           <input type="search" id="search-input" placeholder="Part number or name…" />
@@ -66,6 +73,7 @@
           </select>
         </label>
         <div class="chips" role="group" aria-label="Quick filters">
+          <label class="chip"><input type="checkbox" id="only-sold-negative" /> Sold with negative stock only</label>
           <label class="chip"><input type="checkbox" id="only-repeated" /> Repeated only</label>
           <label class="chip"><input type="checkbox" id="only-negative-now" /> Negative now</label>
           <label class="chip"><input type="checkbox" id="only-replenish" /> Needs replenishment</label>

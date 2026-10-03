@@ -23,11 +23,12 @@
     onlyRepeated: false,
     onlyNegativeNow: false,
     onlyNeedsReplenishment: false,
+    onlySoldNegative: false,
     minTimes: 0,
     partsSort: { key: 'timesNegative', dir: 'desc' },
     daysSort: { key: 'date', dir: 'desc' },
     daysMode: 'problem',
-    selectedProductId: null,
+    selectedKey: null,
     partsShown: PAGE_SIZE,
     daysShown: PAGE_SIZE
   };
@@ -38,11 +39,19 @@
   let view = null; // { daily, summary, filtered, dayRows }
   let requestSeq = 0;
 
-  // Opened from the popup: ?preset=last7|last30 and ?part=<product id> jump
-  // straight to that period and part.
+  // Opened from the popup: ?preset=last7|last30 (or ?preset=date&date=YYYY-MM-DD)
+  // and ?part=<product id> jump straight to that period and part; ?soldNeg=1
+  // turns on "Sold with negative stock only".
   const params = new URLSearchParams(location.search);
-  let pendingPartId = Number(params.get('part')) || null;
+  let pendingKey = params.get('part') || null;
   if (['today', 'yesterday', 'last7', 'last30'].includes(params.get('preset'))) state.preset = params.get('preset');
+  if (params.get('preset') === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(params.get('date') || '')) {
+    state.preset = 'date';
+    state.date = params.get('date');
+  }
+  if (params.get('soldNeg') === '1') state.onlySoldNegative = true;
+  // Per location (default) or part total - ?view=total opens the old view.
+  state.byLocation = params.get('view') !== 'total';
 
   const offsetMinutes = -new Date().getTimezoneOffset();
 
@@ -178,21 +187,24 @@
 
   function recompute() {
     const daily = SA.buildDailyStock(cache.data, {
-      from: state.range.from, to: state.range.to, offsetMinutes, warehouseId: state.warehouseId
+      from: state.range.from, to: state.range.to, offsetMinutes, warehouseId: state.warehouseId, byLocation: state.byLocation
     });
     const summary = SA.summarizeParts(daily);
     view = { daily, summary };
-    if (state.selectedProductId && !summary.some((r) => r.productId === state.selectedProductId)) {
-      state.selectedProductId = null;
+    if (state.selectedKey && !summary.some((r) => r.key === state.selectedKey)) {
+      state.selectedKey = null;
     }
     state.partsShown = PAGE_SIZE;
     state.daysShown = PAGE_SIZE;
     showState('content');
     render();
-    if (pendingPartId) {
-      const id = pendingPartId;
-      pendingPartId = null;
-      if (summary.some((r) => r.productId === id)) selectPart(id);
+    if (pendingKey) {
+      const key = pendingKey;
+      pendingKey = null;
+      // A plain product id (from the part-total view) picks that part's worst location.
+      const row = summary.find((r) => r.key === key) ||
+        SA.rankParts(summary.filter((r) => String(r.productId) === key.split('@')[0]))[0];
+      if (row) selectPart(row.key);
     }
   }
 
@@ -202,6 +214,7 @@
       onlyRepeated: state.onlyRepeated,
       onlyNegativeNow: state.onlyNegativeNow,
       onlyNeedsReplenishment: state.onlyNeedsReplenishment,
+      onlySoldNegative: state.onlySoldNegative,
       minTimes: state.minTimes
     });
     const { key, dir } = state.partsSort;
@@ -227,7 +240,11 @@
   // KPI tiles double as quick filters where that makes sense.
   function renderKpis(t) {
     const tiles = [
-      { label: 'Parts affected', value: t.parts, sub: 'went negative, sold out or sold without stock' },
+      {
+        label: 'Parts affected',
+        value: t.parts,
+        sub: state.byLocation ? `in ${t.rows} part-location row${t.rows === 1 ? '' : 's'}` : 'went negative, sold out or sold without stock'
+      },
       { label: 'Repeated offenders', value: t.repeated, sub: 'ran out 2+ times · click to filter', toggle: 'onlyRepeated' },
       { label: 'Times went negative', value: t.negativeEvents, sub: 'all parts, this period' },
       { label: 'Units sold without stock', value: qty(t.soldWithoutStock), sub: 'more than was on hand' },
@@ -250,10 +267,29 @@
 
   // ---------------- Tables ----------------
 
-  const PART_COLUMNS = [
+  // "WH/Stock/B -3 · WH/Stock 2" with the negative locations in red.
+  function locationBreakdown(list) {
+    if (!list || !list.length) return '';
+    const out = [];
+    list.forEach((l, i) => {
+      if (i) out.push(' · ');
+      out.push(el('span', { class: l.quantity < 0 ? 'neg' : null, text: `${l.location} ${qty(l.quantity)}` }));
+    });
+    return el('span', { class: 'loc-list' }, out);
+  }
+
+  const LOCATION_COLUMN = { key: 'location', label: 'Location', cls: 'loc' };
+  const BY_LOCATION_COLUMN = {
+    key: 'onHandByLocation', label: 'On Hand by Location', title: 'Stock in each location right now, most negative first',
+    sortable: false, cls: 'locs', format: (v) => locationBreakdown(v)
+  };
+
+  const BASE_PART_COLUMNS = [
     { key: 'code', label: 'Part Number', cls: 'code' },
     { key: 'name', label: 'Part Name', cls: 'name', exportLabel: 'Part Name' },
+    LOCATION_COLUMN,
     { key: 'current', label: 'On Hand Now', num: true, format: qty, neg: (r) => r.current < 0 },
+    BY_LOCATION_COLUMN,
     { key: 'timesNegative', label: 'Times Neg.', title: 'Times the part went below zero', num: true, exportLabel: 'Times Went Negative' },
     { key: 'stockOuts', label: 'Sold Out', title: 'Times a sale took the last unit (stock exactly 0)', num: true, exportLabel: 'Times Sold Out' },
     { key: 'negativeDays', label: 'Days Neg.', title: 'Days that ended with negative stock', num: true, exportLabel: 'Days Negative' },
@@ -265,19 +301,33 @@
     { key: 'lastNegativeDate', label: 'Last Negative', format: niceDate, cls: 'date' }
   ];
 
-  const DAY_COLUMNS = [
+  const MOVED_COLUMNS = new Set(['movedIn', 'movedOut']);
+  const BASE_DAY_COLUMNS = [
     { key: 'date', label: 'Date', format: niceDate, cls: 'date' },
     { key: 'code', label: 'Part Number', cls: 'code' },
     { key: 'name', label: 'Part Name', cls: 'name' },
+    LOCATION_COLUMN,
     { key: 'opening', label: 'On Hand (start)', num: true, format: qty, neg: (r) => r.opening < 0 },
     { key: 'received', label: 'Received', num: true, format: qty, muted: (r) => !r.received },
+    { key: 'movedIn', label: 'Moved In', title: 'Transferred in from another location', num: true, format: qty, muted: (r) => !r.movedIn },
     { key: 'sold', label: 'Sold', num: true, format: qty, muted: (r) => !r.sold },
     { key: 'returned', label: 'Returned', num: true, format: qty, muted: (r) => !r.returned },
+    { key: 'movedOut', label: 'Moved Out', title: 'Transferred out to another location', num: true, format: qty, muted: (r) => !r.movedOut },
     { key: 'issued', label: 'Other Out', num: true, format: qty, muted: (r) => !r.issued },
     { key: 'closing', label: 'On Hand (end)', num: true, format: qty, neg: (r) => r.closing < 0 },
     { key: 'negativeQty', label: 'Negative Qty', num: true, format: qty, neg: (r) => r.negativeQty < 0, muted: (r) => !r.negativeQty },
     { key: 'soldWithoutStock', label: 'Sold w/o Stock', num: true, format: qty, neg: (r) => r.soldWithoutStock > 0, muted: (r) => !r.soldWithoutStock }
   ];
+
+  // Location and Moved In/Out only mean something per location.
+  function partColumns() {
+    return state.byLocation ? BASE_PART_COLUMNS : BASE_PART_COLUMNS.filter((c) => c !== LOCATION_COLUMN);
+  }
+  function dayColumns() {
+    return state.byLocation
+      ? BASE_DAY_COLUMNS
+      : BASE_DAY_COLUMNS.filter((c) => c !== LOCATION_COLUMN && !MOVED_COLUMNS.has(c.key));
+  }
 
   function flagBadges(r) {
     const out = [];
@@ -329,17 +379,17 @@
     const body = el('tbody');
     if (!parts.length) {
       body.append(el('tr', { class: 'empty-row' }, el('td', {
-        colspan: PART_COLUMNS.length,
+        colspan: partColumns().length,
         text: view.summary.length ? 'No parts match these filters.' : 'No part went negative or sold out in this period.'
       })));
     }
     for (const r of parts.slice(0, state.partsShown)) {
       body.append(el('tr', {
-        class: `clickable${r.productId === state.selectedProductId ? ' selected' : ''}`,
-        onclick: () => selectPart(r.productId === state.selectedProductId ? null : r.productId)
-      }, PART_COLUMNS.map((c) => cell(c, r))));
+        class: `clickable${r.key === state.selectedKey ? ' selected' : ''}`,
+        onclick: () => selectPart(r.key === state.selectedKey ? null : r.key)
+      }, partColumns().map((c) => cell(c, r))));
     }
-    table.replaceChildren(headerRow(PART_COLUMNS, state.partsSort, (c) => {
+    table.replaceChildren(headerRow(partColumns(), state.partsSort, (c) => {
       state.partsSort = nextSort(state.partsSort, c);
       render();
     }), body);
@@ -350,8 +400,8 @@
   }
 
   function currentDayRows(parts) {
-    const productIds = state.selectedProductId ? [state.selectedProductId] : parts.map((r) => r.productId);
-    const rows = SA.dayRowsFor(view.daily, parts, { productIds, onlyProblemDays: state.daysMode === 'problem' });
+    const keys = state.selectedKey ? [state.selectedKey] : parts.map((r) => r.key);
+    const rows = SA.dayRowsFor(view.daily, parts, { keys, onlyProblemDays: state.daysMode === 'problem' });
     const { key, dir } = state.daysSort;
     return SA.sortRows(rows, key, dir, key === 'date' ? ['code'] : ['date']);
   }
@@ -363,14 +413,14 @@
     const body = el('tbody');
     if (!rows.length) {
       body.append(el('tr', { class: 'empty-row' }, el('td', {
-        colspan: DAY_COLUMNS.length,
+        colspan: dayColumns().length,
         text: state.daysMode === 'problem' ? 'No problem days for these parts. Switch to "All days" to see every day.' : 'No days to show.'
       })));
     }
     for (const r of rows.slice(0, state.daysShown)) {
-      body.append(el('tr', { class: r.problem ? 'problem' : null }, DAY_COLUMNS.map((c) => cell(c, r))));
+      body.append(el('tr', { class: r.problem ? 'problem' : null }, dayColumns().map((c) => cell(c, r))));
     }
-    table.replaceChildren(headerRow(DAY_COLUMNS, state.daysSort, (c) => {
+    table.replaceChildren(headerRow(dayColumns(), state.daysSort, (c) => {
       state.daysSort = nextSort(state.daysSort, c);
       renderDaysTable(view.filtered);
     }), body);
@@ -380,33 +430,33 @@
     });
 
     const chip = $('days-filter-chip');
-    const selected = state.selectedProductId && view.summary.find((r) => r.productId === state.selectedProductId);
+    const selected = state.selectedKey && view.summary.find((r) => r.key === state.selectedKey);
     chip.hidden = !selected;
     if (selected) {
       chip.replaceChildren(
-        el('span', { text: `Showing ${selected.code || selected.name} only` }),
+        el('span', { text: `Showing ${selected.code || selected.name}${selected.location ? ` @ ${selected.location}` : ''} only` }),
         el('button', { title: 'Show all parts', 'aria-label': 'Show all parts', text: '×', onclick: () => selectPart(null) })
       );
     }
   }
 
-  function selectPart(productId) {
-    state.selectedProductId = productId;
+  function selectPart(key) {
+    state.selectedKey = key;
     state.daysShown = PAGE_SIZE;
     // Looking at one part: show every day so the whole on-hand story is visible.
-    setDaysMode(productId ? 'all' : 'problem', false);
+    setDaysMode(key ? 'all' : 'problem', false);
     render();
-    if (productId) $('part-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (key) $('part-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   // ---------------- Selected part: chart ----------------
 
   function renderPartDetail() {
     const box = $('part-detail');
-    const row = state.selectedProductId && view.summary.find((r) => r.productId === state.selectedProductId);
+    const row = state.selectedKey && view.summary.find((r) => r.key === state.selectedKey);
     box.hidden = !row;
     if (!row) return;
-    $('part-detail-title').textContent = `${row.code ? `${row.code} · ` : ''}${row.name}`;
+    $('part-detail-title').textContent = `${row.code ? `${row.code} · ` : ''}${row.name}${row.location ? ` @ ${row.location}` : ''}`;
     const bits = [
       `On hand now: ${qty(row.current)}`,
       `went negative ${row.timesNegative} time${row.timesNegative === 1 ? '' : 's'}`,
@@ -418,7 +468,7 @@
     if (row.soldOutDates.length) bits.push(`sold out on: ${row.soldOutDates.map(niceDate).join(', ')}`);
     if (row.negativeAtStart) bits.push('already negative at the start of the period');
     $('part-detail-sub').textContent = bits.join(' · ');
-    renderChart(view.daily[row.productId].days);
+    renderChart(view.daily[row.key].days);
   }
 
   function niceTicks(min, max, count = 4) {
@@ -519,8 +569,10 @@
 
   // ---------------- Export ----------------
 
-  const PART_EXPORT = [
-    ...PART_COLUMNS.filter((c) => c.key !== 'wentNegativeDates').map((c) => ({ key: c.key, label: c.exportLabel || c.label })),
+  const partExport = () => [
+    ...partColumns().filter((c) => c.key !== 'wentNegativeDates').map((c) => (c === BY_LOCATION_COLUMN
+      ? { key: 'onHandByLocationText', label: c.label }
+      : { key: c.key, label: c.exportLabel || c.label })),
     { key: 'wentNegativeDates', label: 'Went Negative On', format: (v) => (v || []).join(' ') },
     { key: 'soldOutDates', label: 'Sold Out On', format: (v) => (v || []).join(' ') },
     { key: 'negativeDates', label: 'All Negative Days', format: (v) => (v || []).join(' ') },
@@ -528,11 +580,11 @@
     { key: 'needsReplenishment', label: 'Needs Replenishment', format: (v) => (v ? 'Yes' : 'No') },
     { key: 'negativeNow', label: 'Negative Now', format: (v) => (v ? 'Yes' : 'No') }
   ];
-  const DAY_EXPORT = DAY_COLUMNS.map((c) => ({ key: c.key, label: c.label }));
+  const dayExport = () => dayColumns().map((c) => ({ key: c.key, label: c.label }));
 
   function fileStamp() {
     const r = state.range;
-    const wh = state.warehouseId ? `_wh${state.warehouseId}` : '';
+    const wh = (state.warehouseId ? `_wh${state.warehouseId}` : '') + (state.byLocation ? '_by-location' : '');
     return r.from === r.to ? `${r.from}${wh}` : `${r.from}_to_${r.to}${wh}`;
   }
 
@@ -558,21 +610,24 @@
   }
 
   $('export-parts-btn').addEventListener('click', (e) => {
-    download(`stockouts-parts_${fileStamp()}.csv`, SA.toDelimited(view.filtered, PART_EXPORT, ','));
+    download(`stockouts-parts_${fileStamp()}.csv`, SA.toDelimited(view.filtered, partExport(), ','));
     flash(e.currentTarget, 'Downloaded');
   });
-  $('copy-parts-btn').addEventListener('click', (e) => copy(e.currentTarget, SA.toDelimited(view.filtered, PART_EXPORT, '\t')));
+  $('copy-parts-btn').addEventListener('click', (e) => copy(e.currentTarget, SA.toDelimited(view.filtered, partExport(), '\t')));
   $('export-days-btn').addEventListener('click', (e) => {
-    download(`stockouts-daywise_${fileStamp()}.csv`, SA.toDelimited(view.dayRows, DAY_EXPORT, ','));
+    download(`stockouts-daywise_${fileStamp()}.csv`, SA.toDelimited(view.dayRows, dayExport(), ','));
     flash(e.currentTarget, 'Downloaded');
   });
-  $('copy-days-btn').addEventListener('click', (e) => copy(e.currentTarget, SA.toDelimited(view.dayRows, DAY_EXPORT, '\t')));
+  $('copy-days-btn').addEventListener('click', (e) => copy(e.currentTarget, SA.toDelimited(view.dayRows, dayExport(), '\t')));
 
   // ---------------- Filter controls ----------------
 
   function setToggle(key, value) {
     state[key] = value;
-    const box = { onlyRepeated: 'only-repeated', onlyNegativeNow: 'only-negative-now', onlyNeedsReplenishment: 'only-replenish' }[key];
+    const box = {
+      onlyRepeated: 'only-repeated', onlyNegativeNow: 'only-negative-now',
+      onlyNeedsReplenishment: 'only-replenish', onlySoldNegative: 'only-sold-negative'
+    }[key];
     $(box).checked = value;
     state.partsShown = PAGE_SIZE;
     state.daysShown = PAGE_SIZE;
@@ -618,6 +673,24 @@
     load();
   });
 
+  function syncLevelBar() {
+    document.querySelectorAll('#level-bar button').forEach((b) =>
+      b.classList.toggle('active', (b.dataset.level === 'location') === state.byLocation));
+  }
+  document.querySelectorAll('#level-bar button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const byLocation = btn.dataset.level === 'location';
+      if (byLocation === state.byLocation) return;
+      state.byLocation = byLocation;
+      syncLevelBar();
+      // Keep the same part selected, at its worst location / as a whole.
+      if (state.selectedKey) pendingKey = state.selectedKey.split('@')[0];
+      state.selectedKey = null;
+      if (cache) recompute();
+    });
+  });
+  syncLevelBar();
+
   $('warehouse-select').addEventListener('change', () => {
     state.warehouseId = $('warehouse-select').value ? Number($('warehouse-select').value) : null;
     if (cache) recompute();
@@ -641,6 +714,7 @@
   $('only-repeated').addEventListener('change', (e) => setToggle('onlyRepeated', e.target.checked));
   $('only-negative-now').addEventListener('change', (e) => setToggle('onlyNegativeNow', e.target.checked));
   $('only-replenish').addEventListener('change', (e) => setToggle('onlyNeedsReplenishment', e.target.checked));
+  $('only-sold-negative').addEventListener('change', (e) => setToggle('onlySoldNegative', e.target.checked));
 
   document.querySelectorAll('#days-mode button').forEach((btn) => {
     btn.addEventListener('click', () => setDaysMode(btn.dataset.mode));
@@ -655,6 +729,11 @@
   // ---------------- Start ----------------
 
   document.querySelectorAll('#period-bar button').forEach((b) => b.classList.toggle('active', b.dataset.preset === state.preset));
+  if (state.preset === 'date') {
+    $('date-single').hidden = false;
+    $('date-single-input').value = state.date;
+  }
+  $('only-sold-negative').checked = state.onlySoldNegative;
 
   (async () => {
     if (!(await connect())) {

@@ -439,6 +439,23 @@ button:focus-visible {
   font-weight: 700;
 }
 
+.data-table td.loc {
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.data-table td.locs {
+  min-width: 180px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.loc-list .neg {
+  color: var(--danger);
+  font-weight: 700;
+}
+
 .data-table td.muted {
   color: var(--faint);
 }

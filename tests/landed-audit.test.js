@@ -3,6 +3,7 @@ const assert = require('assert');
 const {
   sinceDateForRange, auditLandedCosts, buildAuditSpreadsheetText,
   findIncompleteReceipts, summarizeUnappliedBills, shapeNegativeStockSales,
+  utcToLocalDay, localDayStartUtc, negativeSalesOnDay,
   replayFifo, replayMatchesOdoo, affectedSales
 } = require('../lib/landed-audit.js');
 
@@ -180,6 +181,30 @@ const {
   const lines = buildAuditSpreadsheetText(audit).split('\n');
   assert.strictEqual(lines.length, 3);
   assert.ok(lines.every((l) => l.split('\t').length === 11));
+}
+
+// Negative stock sales on one local day (Muscat, UTC+4)
+{
+  assert.strictEqual(utcToLocalDay('2026-09-27 21:30:00', 240), '2026-09-28');
+  assert.strictEqual(utcToLocalDay('2026-09-27 19:59:59', 240), '2026-09-27');
+  assert.strictEqual(utcToLocalDay(null, 240), null);
+  assert.strictEqual(localDayStartUtc('2026-09-28', 240), '2026-09-27 20:00:00');
+
+  const sale = (id, productId, date, qty, waitingQty) => ({
+    outLayerId: id, productId, product: `P${productId}`, qty, unitCost: 1, date, waitingQty,
+    sale: { saleOrderId: 100 + id, saleOrderName: `S${id}`, customer: 'C', pickingName: `OUT/${id}` }
+  });
+  const rows = [
+    sale(1, 1, '2026-09-27 21:30:00', 2, 2), // 28th local, waiting
+    sale(2, 1, '2026-09-28 08:00:00', 1, 0), // 28th local, covered
+    sale(3, 2, '2026-09-28 10:00:00', 3, 1), // 28th local, waiting
+    sale(4, 3, '2026-09-27 19:00:00', 5, 5), // 27th local - excluded
+    { ...sale(5, 4, '2026-09-28 10:00:00', 4, 4), sale: null } // not a sale - excluded
+  ];
+  const { sales, totals } = negativeSalesOnDay(rows, '2026-09-28', 240);
+  assert.deepStrictEqual(sales.map((r) => r.outLayerId).sort(), [1, 2, 3]);
+  assert.deepStrictEqual(totals, { parts: 2, sales: 3, units: 6, waiting: 2 });
+  assert.strictEqual(negativeSalesOnDay(rows, '2026-09-26', 240).sales.length, 0);
 }
 
 console.log('landed-audit tests passed');

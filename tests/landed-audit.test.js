@@ -207,4 +207,45 @@ const {
   assert.strictEqual(negativeSalesOnDay(rows, '2026-09-26', 240).sales.length, 0);
 }
 
+// Copy for Excel, one tab at a time: every detail plus a Notes column
+{
+  const { buildTabSpreadsheetText } = require('../lib/landed-audit.js');
+  const audit = {
+    fixNow: [{ product: 'P1', pickingName: 'IN/1', poName: 'PO1', vendor: 'V1', dateDone: '2026-09-01 10:00:00',
+      receivedQty: 10, soldQty: 4, remainingQty: 6, receivedValue: 100, draftLandedCosts: ['LC/9'] }],
+    alreadySold: [{ product: 'P2', pickingName: 'IN/2', poName: 'PO2', vendor: 'V2', dateDone: '2026-09-02 10:00:00',
+      receivedQty: 5, soldQty: 5, remainingQty: 0, receivedValue: 50, draftLandedCosts: [] }],
+    incomplete: [{ pickingName: 'IN/3', poName: 'PO3', vendor: 'V3', dateDone: '2026-09-03', landedCosts: ['LC/1'],
+      costProducts: ['Freight'], missing: [{ product: 'Customs', seen: 4, of: 5 }] }],
+    bills: [{ billName: 'BILL/1', vendor: 'Agent', date: '2026-09-04', products: ['Freight'], lcTotal: 30,
+      appliedTotal: 10, unapplied: 20, status: 'partial', appliedCosts: [{ name: 'LC/2' }], draftCosts: [] }],
+    wentToCogs: [{ product: 'P4', costName: 'LC/3', costDate: '2026-09-05', costValidatedAt: '2026-09-05 08:00:00',
+      pickingName: 'IN/4', poName: 'PO4', vendor: 'V4', allocated: 12, intoStock: 2, divertedValue: 10, fullyDiverted: false }],
+    negativeSales: [{ product: 'P5', qty: 2, unitCost: 1.5, date: '2026-09-06 09:00:00', status: 'waiting', waitingQty: 2,
+      correction: 0, coveredAt: null, sale: { saleOrderName: 'S1', customer: 'C1', pickingName: 'OUT/1' } }]
+  };
+  const parse = (text) => text.split('\n').map((l) => l.split('\t'));
+
+  const missing = parse(buildTabSpreadsheetText('missing', audit));
+  assert.strictEqual(missing.length, 4);
+  assert.ok(missing.every((r) => r.length === missing[0].length));
+  assert.strictEqual(missing[0][missing[0].length - 1], 'Notes');
+  assert.ok(missing[1].join('|').includes('Missing - still in stock|P1|IN/1|PO1|V1|2026-09-01|10.00|4.00|6.00|100.000'));
+  assert.ok(missing[1][14].includes('Post the landed cost now') && missing[1][14].includes('4.00 of 10.00 already sold') && missing[1][14].includes('LC/9'));
+  assert.ok(missing[3][12].includes('Customs (4 of 5 receipts)'));
+
+  const bills = parse(buildTabSpreadsheetText('bills', audit));
+  assert.deepStrictEqual(bills[1].slice(0, 8), ['BILL/1', 'Agent', '2026-09-04', 'Freight', '30.000', '10.000', '20.000', 'Partly applied']);
+  assert.ok(bills[1][10].includes('Partly applied: 10.000 of 30.000 OMR (LC/2)'));
+
+  const late = parse(buildTabSpreadsheetText('late', audit));
+  assert.deepStrictEqual(late[1].slice(7, 11), ['12.000', '2.000', '10.000', 'Partly to COGS']);
+
+  const neg = parse(buildTabSpreadsheetText('negative', audit));
+  assert.deepStrictEqual(neg[1].slice(0, 9), ['P5', 'S1', 'C1', 'OUT/1', '2026-09-06', '2.00', '1.500', 'Waiting', '2.00']);
+  assert.ok(neg[1][11].includes('Still 2.00 short'));
+  assert.strictEqual(parse(buildTabSpreadsheetText('negative', audit, { rows: [] })).length, 1); // header only
+  assert.throws(() => buildTabSpreadsheetText('nope', audit));
+}
+
 console.log('landed-audit tests passed');

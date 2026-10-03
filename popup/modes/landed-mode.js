@@ -2,13 +2,14 @@
 (function () {
   const { $, state, sendToOdoo, showFatalError, num, formatDate, clear, emptyNote, copyToClipboard,
     buildStatGrid, buildLineRow, renderExpandableList, openInOdoo, detailNote, expandableRow } = window.PI;
-  const { sinceDateForRange, auditLandedCosts, buildAuditSpreadsheetText,
+  const { sinceDateForRange, auditLandedCosts, buildAuditSpreadsheetText, buildTabSpreadsheetText,
     replayFifo, replayMatchesOdoo, affectedSales, localDayStartUtc, negativeSalesOnDay } = window.LandedAudit;
 
   // ---- Landed Cost mode elements ----
   const landedRangeButtons = Array.from(document.querySelectorAll('.range-btn'));
   const landedRefreshBtn = $('landed-refresh-btn');
   const landedCopyBtn = $('landed-copy-btn');
+  const tabCopyButtons = Array.from(document.querySelectorAll('.landed-tab-copy'));
   const landedLoadingEl = $('landed-loading');
   const landedResultsEl = $('landed-results');
   const landedTotalsEl = $('landed-totals');
@@ -31,6 +32,7 @@
   let landedRequestSeq = 0; // ignore a slow older response if the range changed meanwhile
   let negDay = null; // Neg. stock tab: local 'YYYY-MM-DD' picked, or null for the whole period
   let negDayRequestSeq = 0;
+  let negShownRows = null; // the Neg. stock list on screen (whole period or one day), for Copy for Excel
 
   // "Which sales used units from this receipt" - replays the product's
   // valuation history (see replayFifo) and, for a late landed cost, splits the
@@ -210,6 +212,7 @@
 
   function renderNegativeAll(audit) {
     negDaySummaryEl.style.display = 'none';
+    negShownRows = audit.errors.negative ? [] : audit.negativeSales;
     if (audit.errors.negative) emptyNote(landedNegativeEl, `Could not check negative stock: ${audit.errors.negative}`);
     else renderLandedList(landedNegativeEl, audit.negativeSales, negativeRowNode, 'No sales made with negative stock in this period.');
   }
@@ -223,13 +226,15 @@
     const day = negDay;
     const offsetMinutes = -new Date(`${day}T12:00:00`).getTimezoneOffset();
     negDaySummaryEl.style.display = 'none';
+    negShownRows = null; // nothing to copy until this day has loaded
     emptyNote(landedNegativeEl, 'Loading sales made with negative stock on this day...');
 
     const res = await sendToOdoo('GET_NEGATIVE_STOCK_SALES', { sinceUtc: localDayStartUtc(day, offsetMinutes) });
     if (seq !== negDayRequestSeq) return;
-    if (!res.ok) { emptyNote(landedNegativeEl, `Could not check negative stock: ${res.error}`); return; }
+    if (!res.ok) { negShownRows = []; emptyNote(landedNegativeEl, `Could not check negative stock: ${res.error}`); return; }
 
     const { sales, totals } = negativeSalesOnDay(res.data, day, offsetMinutes);
+    negShownRows = sales;
     negDaySummaryEl.textContent = sales.length
       ? `${day}: ${totals.parts} part${totals.parts === 1 ? '' : 's'} sold with negative stock · ` +
         `${totals.sales} sale${totals.sales === 1 ? '' : 's'} · ${num(totals.units)} units · ${totals.waiting} still waiting`
@@ -262,6 +267,7 @@
     landedResultsEl.style.display = 'none';
     landedLoadingEl.style.display = 'block';
     landedCopyBtn.disabled = true;
+    tabCopyButtons.forEach((b) => { b.disabled = true; });
     landedRefreshBtn.disabled = true;
 
     const res = await sendToOdoo('GET_LANDED_COST_AUDIT', { sinceDate: sinceDateForRange(landedRange) });
@@ -275,6 +281,7 @@
     renderLandedAudit(landedAuditState);
     landedResultsEl.style.display = 'block';
     landedCopyBtn.disabled = false;
+    tabCopyButtons.forEach((b) => { b.disabled = false; });
   }
 
   landedRangeButtons.forEach((btn) => {
@@ -298,6 +305,18 @@
   landedCopyBtn.addEventListener('click', () => {
     if (!landedAuditState) return;
     copyToClipboard(buildAuditSpreadsheetText(landedAuditState), landedCopyBtn);
+  });
+
+  // One tab's list with every detail and a Notes column. Neg. stock copies
+  // what's on screen - the picked day only, when "Sold on" is set.
+  tabCopyButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (!landedAuditState) return;
+      const tab = btn.dataset.copy;
+      if (tab === 'negative' && !negShownRows) return; // a day is still loading
+      const opts = tab === 'negative' ? { rows: negShownRows } : {};
+      copyToClipboard(buildTabSpreadsheetText(tab, landedAuditState, opts), btn);
+    });
   });
 
   PI.registerMode('landed', {

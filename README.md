@@ -41,7 +41,7 @@ A company-wide check for landed cost problems. You can look at the last **30 day
 | **Posted late** | Landed costs whose share **went to COGS** because the parts were already sold | Tap a row to see **which sales** used those units and how much of the cost belongs to each one. |
 | **Neg. stock** | Sales **delivered before the stock was received**, either still waiting or already covered. Pick a date in **Sold on** to list only the parts sold with negative stock on that day (any date, not limited to the 30/60 day range); **Show all** goes back to the full list. | Landed costs for these units always go to COGS, so the sale margin is overstated. |
 
-Tap any row to see details and buttons that open the receipt, bill, landed cost or sale order in Odoo. **Copy list (Excel)** copies every list as tab-separated text.
+Tap any row to see details and buttons that open the receipt, bill, landed cost or sale order in Odoo. **Copy list (Excel)** copies every list as tab-separated text. Each tab also has its own **Copy for Excel** button. It copies that tab's list with every detail shown in its own column, plus a **Notes** column explaining each row (for example *Still 2 short - waiting for a receipt* or *Partly applied: 10 of 30 OMR*). On Neg. stock it copies the list on screen, so only the picked day when **Sold on** is set.
 
 <p align="center"><img src="docs/landed-cost-posted-late.png" width="360" alt="Posted late tab with affected sales (sample data)"></p>
 

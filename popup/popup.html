@@ -207,6 +207,7 @@
 
         <!-- Missing -->
         <div class="tab-panel landed-panel active" id="ltab-missing">
+          <div class="toggle-bar copy-bar tab-copy-bar"><button class="landed-tab-copy" data-copy="missing" disabled>Copy for Excel</button></div>
           <h4 class="landed-heading tone-warning">No landed cost - still in stock</h4>
           <p class="landed-hint">Post the landed cost now - it will still reach the product cost for the units in stock.</p>
           <div id="landed-fix-now"></div>
@@ -222,6 +223,7 @@
 
         <!-- Bills -->
         <div class="tab-panel landed-panel" id="ltab-bills">
+          <div class="toggle-bar copy-bar tab-copy-bar"><button class="landed-tab-copy" data-copy="bills" disabled>Copy for Excel</button></div>
           <h4 class="landed-heading tone-warning">Bills with landed cost lines - not applied</h4>
           <p class="landed-hint">Posted vendor bills with landed-cost products, but no posted landed cost created from them (or only part). All vendors, local too.</p>
           <div id="landed-bills"></div>
@@ -229,6 +231,7 @@
 
         <!-- Posted late -->
         <div class="tab-panel landed-panel" id="ltab-late">
+          <div class="toggle-bar copy-bar tab-copy-bar"><button class="landed-tab-copy" data-copy="late" disabled>Copy for Excel</button></div>
           <h4 class="landed-heading tone-muted">Posted late - went to COGS</h4>
           <p class="landed-hint">Landed cost posted after the parts were sold. Tap to see which sales carry the missing cost.</p>
           <div id="landed-went-to-cogs"></div>
@@ -236,6 +239,7 @@
 
         <!-- Negative stock -->
         <div class="tab-panel landed-panel" id="ltab-negative">
+          <div class="toggle-bar copy-bar tab-copy-bar"><button class="landed-tab-copy" data-copy="negative" disabled>Copy for Excel</button></div>
           <h4 class="landed-heading tone-danger">Sold with negative stock</h4>
           <p class="landed-hint">Delivered before the stock was received. Landed costs for these units always go to COGS.</p>
           <div class="neg-day-bar">
